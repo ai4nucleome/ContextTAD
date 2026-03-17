@@ -5,11 +5,9 @@ Structure-aware TAD training entry.
 Core path:
 - Input: obs/OE window matrices
 - Backbone: SAM3 vision encoder + text-guided fusion
-- Heads: left boundary, right boundary, presence, nesting depth, and pair matrix
+- Heads: left boundary, right boundary
 - Loss: weighted combination configured by command-line arguments
 
-Example:
-  conda run -n 3dgenome python scripts/train_structure.py --method text_oe --epochs 10
 """
 
 import os
