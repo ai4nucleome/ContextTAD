@@ -56,6 +56,8 @@ Download SAM3 model files from:
 
 ## Data preparation
 
+**Note: Most of our data have be uploaded in Zenodo: https://doi.org/10.5281/zenodo.19062598, you only need download `.mcool` data from 4DN.**
+
 Detailed data layout is documented in:
 
 - `0-data/README.md`

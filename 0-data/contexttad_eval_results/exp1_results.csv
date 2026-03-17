@@ -1,0 +1,17 @@
+tool,CTCF supported level 0 TAD,CTCF supported level 1+ TAD,unsupported level 0 TAD,unsupported level 1+ TAD
+Armatus,179,253,1080,1522
+Arrowhead,50,1,69,3
+CaTCH,21,3,391,635
+Domaincall,44,0,821,0
+EAST,95,0,1643,0
+Grinch,14,1,509,290
+HiCSeg,111,0,1253,0
+IC-Finder,254,0,2176,0
+OnTAD,266,216,1955,1381
+GMAP,124,11,734,173
+TopDom,355,0,2550,0
+RefHiC,332,179,378,426
+deDoc,83,0,959,1
+HiTAD,161,28,859,179
+ContextTAD,344,382,199,932
+RobusTAD,313,269,441,502
