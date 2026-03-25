@@ -8,6 +8,12 @@ ContextTAD is a deep-learning TAD caller that learns boundary evidence from broa
 **An example visualization of ContextTAD**:
 ![ContextTAD example visualization](figs/suppl_fig5b.png)
 
+## Model checkpoint
+
+The trained model checkpoint is available at huggingface as `CompBioDSA/ContextTAD`.  
+
+[Link to HuggingFace ModelHub](https://huggingface.co/CompBioDSA/ContextTAD)
+
 ## Repository layout
 
 ```text
