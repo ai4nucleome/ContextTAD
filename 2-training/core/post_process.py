@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal keep-ratio postprocess for ContextTAD raw BED.
-
-Pipeline:
-  1) length filter
-  2) keep top ratio by score
-  3) near-duplicate removal in bin space
-  4) prune over-complex L1+ structures
-  5) export 3-col BED in right-boundary coordinates (right = end_exclusive - 1 bin)
-"""
+from __future__ import annotations
 
 import argparse
 import json
@@ -17,10 +9,12 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
 RESOLUTION = 5000
+Scored = Tuple[str, int, int, float]
+TAD = Tuple[str, int, int]
 
 
-def read_scored_bed(path: Path, min_len_bins: int = 5) -> List[Tuple[str, int, int, float]]:
-    items: List[Tuple[str, int, int, float]] = []
+def read_scored_bed(path: Path, min_len_bins: int = 5) -> List[Scored]:
+    items: List[Scored] = []
     with path.open() as f:
         for line in f:
             parts = line.strip().split()
@@ -35,15 +29,10 @@ def read_scored_bed(path: Path, min_len_bins: int = 5) -> List[Tuple[str, int, i
                 continue
             if right <= left:
                 continue
-
             span = right - left
-            if left % RESOLUTION == 0 and span % RESOLUTION == 0:
-                length_bins = span // RESOLUTION
-            else:
-                length_bins = span
+            length_bins = span // RESOLUTION if left % RESOLUTION == 0 and span % RESOLUTION == 0 else span
             if length_bins < min_len_bins:
                 continue
-
             items.append((chrom, left, right, score))
     return items
 
@@ -60,12 +49,10 @@ def _conflicts(sel_set: Set[Tuple[str, int, int]], chrom: str, l_bin: int, r_bin
     return False
 
 
-def greedy_dedup(candidates: List[Tuple[str, int, int, float]], dedup_gap_bins: int = 4) -> List[Tuple[str, int, int]]:
-    sorted_cands = sorted(candidates, key=lambda x: x[3], reverse=True)
-    selected: List[Tuple[str, int, int]] = []
+def greedy_dedup(candidates: List[Scored], dedup_gap_bins: int = 5) -> List[TAD]:
+    selected: List[TAD] = []
     sel_set: Set[Tuple[str, int, int]] = set()
-
-    for chrom, left, right, _score in sorted_cands:
+    for chrom, left, right, _score in sorted(candidates, key=lambda x: x[3], reverse=True):
         l_bin, r_bin = to_bins(left, right)
         if l_bin >= r_bin:
             continue
@@ -73,45 +60,33 @@ def greedy_dedup(candidates: List[Tuple[str, int, int, float]], dedup_gap_bins: 
             continue
         selected.append((chrom, left, right))
         sel_set.add((chrom, l_bin, r_bin))
-
     return selected
 
 
-def classify_l0_l1plus(tads: List[Tuple[str, int, int]]):
+def classify_l0_l1plus(tads: List[TAD]):
     by_chrom: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
     for chrom, start, end in tads:
         by_chrom[chrom].append((start, end))
-
     l0 = []
     l1plus = []
     children_map = {}
-
     for chrom, chrom_tads in by_chrom.items():
         for tad in chrom_tads:
             children = []
             for tad2 in chrom_tads:
-                if tad2[0] >= tad[0] and tad2[1] <= tad[1]:
-                    if tad2[0] == tad[0] and tad2[1] == tad[1]:
-                        continue
+                if tad2[0] >= tad[0] and tad2[1] <= tad[1] and tad2 != tad:
                     children.append(tad2)
             key = (chrom, tad[0], tad[1])
             children_map[key] = children
-            if len(children) > 0:
+            if children:
                 l1plus.append(key)
             else:
                 l0.append(key)
-
     return l0, l1plus, children_map
 
 
-def prune_l1plus(
-    tads: List[Tuple[str, int, int]],
-    max_children: int,
-    max_l1plus_size: int,
-    max_children_coverage_ratio: float,
-) -> Tuple[List[Tuple[str, int, int]], dict]:
+def prune_l1plus(tads: List[TAD], max_children: int, max_l1plus_size: int, max_children_coverage_ratio: float) -> Tuple[List[TAD], dict]:
     l0, l1plus, children_map = classify_l0_l1plus(tads)
-
     stats = {
         "total_before": len(tads),
         "l0_count": len(l0),
@@ -121,17 +96,14 @@ def prune_l1plus(
         "dropped_coverage_ratio": 0,
         "l1plus_kept": 0,
     }
-
     kept_l1plus = []
     for tad_key in l1plus:
         _chrom, start, end = tad_key
         children = children_map[tad_key]
-        n_children = len(children)
         tad_size = end - start
         child_total_size = sum(c[1] - c[0] for c in children)
         coverage_ratio = child_total_size / max(tad_size, 1)
-
-        if n_children > max_children:
+        if len(children) > max_children:
             stats["dropped_children"] += 1
             continue
         if tad_size > max_l1plus_size:
@@ -140,35 +112,17 @@ def prune_l1plus(
         if coverage_ratio > max_children_coverage_ratio:
             stats["dropped_coverage_ratio"] += 1
             continue
-
         kept_l1plus.append(tad_key)
-
     stats["l1plus_kept"] = len(kept_l1plus)
     stats["l1plus_dropped"] = stats["l1plus_before"] - stats["l1plus_kept"]
     survivors = l0 + kept_l1plus
     stats["total_after"] = len(survivors)
-
     return survivors, stats
-
-
-def keep_top_ratio(candidates: List[Tuple[str, int, int, float]], keep_ratio: float):
-    keep_ratio = max(min(float(keep_ratio), 1.0), 0.0)
-    if keep_ratio <= 0.0:
-        return [], None
-    if keep_ratio >= 1.0:
-        return list(candidates), None
-
-    ranked = sorted(candidates, key=lambda x: x[3], reverse=True)
-    k = max(1, int(round(len(ranked) * keep_ratio)))
-    kept = ranked[:k]
-    eff_thr = kept[-1][3]
-    return kept, eff_thr
 
 
 def _build_snap_map(boundary_bins: List[int], snap_bin: int) -> Dict[int, int]:
     if not boundary_bins or snap_bin <= 0:
         return {b: b for b in set(boundary_bins)}
-
     counts = Counter(boundary_bins)
     uniq = sorted(counts.keys())
     clusters: List[List[int]] = []
@@ -180,7 +134,6 @@ def _build_snap_map(boundary_bins: List[int], snap_bin: int) -> Dict[int, int]:
             clusters.append(cur)
             cur = [b]
     clusters.append(cur)
-
     mapping: Dict[int, int] = {}
     for cl in clusters:
         total = sum(counts[v] for v in cl)
@@ -191,7 +144,7 @@ def _build_snap_map(boundary_bins: List[int], snap_bin: int) -> Dict[int, int]:
     return mapping
 
 
-def snap_boundaries(tads: List[Tuple[str, int, int]], snap_bin: int) -> Tuple[List[Tuple[str, int, int]], dict]:
+def snap_boundaries(tads: List[TAD], snap_bin: int) -> Tuple[List[TAD], dict]:
     if snap_bin <= 0 or not tads:
         return list(tads), {
             "snap_bin": snap_bin,
@@ -202,43 +155,31 @@ def snap_boundaries(tads: List[Tuple[str, int, int]], snap_bin: int) -> Tuple[Li
             "unique_left_after": len(set((c, s // RESOLUTION) for c, s, _ in tads)),
             "unique_right_after": len(set((c, e // RESOLUTION) for c, _, e in tads)),
         }
-
     by_chrom: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
     for chrom, left, right in tads:
         l_bin, r_bin = to_bins(left, right)
-        if r_bin <= l_bin:
-            continue
-        by_chrom[chrom].append((l_bin, r_bin))
-
-    snapped_set: Set[Tuple[str, int, int]] = set()
-    unique_left_before = 0
-    unique_right_before = 0
-    unique_left_after = 0
-    unique_right_after = 0
-
+        if r_bin > l_bin:
+            by_chrom[chrom].append((l_bin, r_bin))
+    snapped_set: Set[TAD] = set()
+    unique_left_before = unique_right_before = unique_left_after = unique_right_after = 0
     for chrom, pairs in by_chrom.items():
         lefts = [l for l, _ in pairs]
         rights = [r for _, r in pairs]
         unique_left_before += len(set(lefts))
         unique_right_before += len(set(rights))
-
         l_map = _build_snap_map(lefts, snap_bin)
         r_map = _build_snap_map(rights, snap_bin)
-
         for l, r in pairs:
             sl = l_map.get(l, l)
             sr = r_map.get(r, r)
             if sr <= sl:
                 sl, sr = l, r
-            if sr <= sl:
-                continue
-            snapped_set.add((chrom, sl * RESOLUTION, sr * RESOLUTION))
-
+            if sr > sl:
+                snapped_set.add((chrom, sl * RESOLUTION, sr * RESOLUTION))
         unique_left_after += len(set(l_map.values()))
         unique_right_after += len(set(r_map.values()))
-
     snapped = sorted(snapped_set, key=lambda x: (x[0], x[1], x[2]))
-    stats = {
+    return snapped, {
         "snap_bin": snap_bin,
         "total_before": len(tads),
         "total_after": len(snapped),
@@ -247,48 +188,37 @@ def snap_boundaries(tads: List[Tuple[str, int, int]], snap_bin: int) -> Tuple[Li
         "unique_left_after": unique_left_after,
         "unique_right_after": unique_right_after,
     }
-    return snapped, stats
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Keep-ratio ContextTAD postprocess")
-    ap.add_argument("--raw_bed", required=True, help="Input 4-column BED")
-    ap.add_argument("--output_bed", required=True, help="Output 3-column BED")
-    ap.add_argument("--stats_json", default="", help="Optional JSON stats output")
+    ap = argparse.ArgumentParser(description="Structural ContextTAD postprocessing")
+    ap.add_argument("--raw_bed", required=True)
+    ap.add_argument("--output_bed", required=True)
+    ap.add_argument("--stats_json", default="")
     ap.add_argument("--min_len_bins", type=int, default=5)
-    ap.add_argument("--keep_ratio", type=float, default=0.66, help="Keep top ratio by score before dedup")
-    ap.add_argument("--dedup_gap_bins", type=int, default=4)
-    ap.add_argument("--max_children", type=int, default=12)
+    ap.add_argument("--dedup_gap_bins", type=int, default=5)
+    ap.add_argument("--max_children", type=int, default=5)
     ap.add_argument("--max_l1plus_size", type=int, default=2_000_000)
-    ap.add_argument("--max_children_coverage_ratio", type=float, default=2.5)
-    ap.add_argument("--snap_bin", type=int, default=2, help="Boundary snapping radius in bins")
+    ap.add_argument("--max_children_coverage_ratio", type=float, default=3.0)
+    ap.add_argument("--snap_bin", type=int, default=2)
     args = ap.parse_args()
 
     raw_path = Path(args.raw_bed)
     if not raw_path.is_file():
         print(f"ERROR: raw_bed not found: {raw_path}", file=sys.stderr)
         sys.exit(1)
-
     candidates = read_scored_bed(raw_path, min_len_bins=args.min_len_bins)
     print(f"Loaded {len(candidates)} candidates from {raw_path}")
 
-    kept, eff_thr = keep_top_ratio(candidates, args.keep_ratio)
-    print(
-        f"Top-ratio keep ({args.keep_ratio:.4f}): {len(candidates)} -> {len(kept)} "
-        f"(effective_score_threshold={eff_thr})"
-    )
-
     out_path = Path(args.output_bed)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if not kept:
+    if not candidates:
         out_path.write_text("")
         print("No candidates kept; wrote empty BED.")
         return
 
-    deduped = greedy_dedup(kept, dedup_gap_bins=args.dedup_gap_bins)
+    deduped = greedy_dedup(candidates, dedup_gap_bins=args.dedup_gap_bins)
     print(f"After dedup (gap={args.dedup_gap_bins}): {len(deduped)} TADs")
-
     pruned, stats = prune_l1plus(
         deduped,
         max_children=args.max_children,
@@ -296,52 +226,33 @@ def main() -> None:
         max_children_coverage_ratio=args.max_children_coverage_ratio,
     )
     print(f"After L1+ pruning: {stats['total_before']} -> {stats['total_after']}")
-
     snapped, snap_stats = snap_boundaries(pruned, snap_bin=args.snap_bin)
     print(
-        "After snapping: "
-        f"count {snap_stats['total_before']} -> {snap_stats['total_after']}; "
+        f"After snapping: count {snap_stats['total_before']} -> {snap_stats['total_after']}; "
         f"left uniq {snap_stats['unique_left_before']} -> {snap_stats['unique_left_after']}; "
         f"right uniq {snap_stats['unique_right_before']} -> {snap_stats['unique_right_after']}"
     )
 
+    n_write = 0
     with out_path.open("w") as f:
-        n_write = 0
         for chrom, left, right in snapped:
-            # Final output uses right-boundary coordinate.
             right_out = right - RESOLUTION
             if right_out <= left:
                 continue
             f.write(f"{chrom}\t{left}\t{right_out}\n")
             n_write += 1
-
     print(f"Written {n_write} TADs to {out_path}")
 
     if args.stats_json:
-        stats_obj = {
-            "raw_bed": str(raw_path),
-            "output_bed": str(out_path),
-            "n_candidates": len(candidates),
-            "n_kept_ratio": len(kept),
-            "effective_score_threshold": eff_thr,
-            "n_dedup": len(deduped),
-            "prune": stats,
-            "snap": snap_stats,
-            "n_written": n_write,
-            "params": {
-                "min_len_bins": args.min_len_bins,
-                "keep_ratio": args.keep_ratio,
-                "dedup_gap_bins": args.dedup_gap_bins,
-                "max_children": args.max_children,
-                "max_l1plus_size": args.max_l1plus_size,
-                "max_children_coverage_ratio": args.max_children_coverage_ratio,
-                "snap_bin": args.snap_bin,
-            },
+        payload = {
+            "raw": len(candidates),
+            "after_dedup": len(deduped),
+            "after_l1_prune": stats,
+            "after_snap": snap_stats,
+            "written": n_write,
+            "params": vars(args),
         }
-        stats_path = Path(args.stats_json)
-        stats_path.parent.mkdir(parents=True, exist_ok=True)
-        stats_path.write_text(json.dumps(stats_obj, indent=2) + "\n")
-        print(f"Stats written to {stats_path}")
+        Path(args.stats_json).write_text(json.dumps(payload, indent=2))
 
 
 if __name__ == "__main__":

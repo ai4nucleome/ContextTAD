@@ -8,13 +8,14 @@
 
 set -e
 
-PYTHON="${PYTHON:-/home/weicai/anaconda3/envs/robustad/bin/python}"
+PYTHON="${PYTHON:-python}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STEP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # Stage-1 inputs
-COOLPATH="${COOLPATH:-/home/weicai/projectnvme/TADAnno_final/0-data/2_eval_tads_data/mcool_data/GM12878/Rao2014/4DNFIXP4QG5B_Rao2014_GM12878_frac1.mcool::/resolutions/5000}"
+COOLPATH="${COOLPATH:-$PROJECT_ROOT/0-data/2_eval_tads_data/mcool_data/GM12878/Rao2014/4DNFIXP4QG5B_Rao2014_GM12878_frac1.mcool::/resolutions/5000}"
 CHROM=""              # Optional CSV chromosome list, e.g. "chr1,chr2,chr3"
 SIZE=400               # Window size in bins
 STEP=200               # Sliding stride in bins

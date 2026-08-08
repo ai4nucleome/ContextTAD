@@ -14,7 +14,10 @@ from pathlib import Path
 
 import numpy as np
 
-DATA_DIR = Path(os.environ.get("TAD_DATA_DIR", "/home/weicai/projectnvme/TADAnno_final/0-data/1_dp_train_infer_data"))
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DATA_DIR = Path(
+    os.environ.get("TAD_DATA_DIR", str(PROJECT_ROOT / "0-data" / "1_dp_train_infer_data"))
+)
 RESOLUTION = 5000
 AUTOSOME_CHROMS = [f"chr{i}" for i in range(1, 23)]
 

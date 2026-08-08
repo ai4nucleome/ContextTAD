@@ -1,131 +1,148 @@
-from typing import Dict, Optional
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from typing import List
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-class TADStructureLoss(nn.Module):
-    """Minimal active loss: pair consistency + boundary-count regression."""
+class PairCountLoss(nn.Module):
+    """ContextTAD objectives and their published ablation switches."""
 
     def __init__(
         self,
-        pair_weight: float = 1.0,
+        pair_weight: float = 2.5,
         count_weight: float = 0.3,
+        boundary_weight: float = 0.0,
         min_len_bins: int = 5,
-        max_len_bins: int = 200,
         pair_hard_window: int = 8,
-        use_pair_hard_negatives: bool = True,
     ):
         super().__init__()
-        self.w_pair = float(pair_weight)
-        self.w_count = float(count_weight)
+        self.pair_weight = float(pair_weight)
+        self.count_weight = float(count_weight)
+        self.boundary_weight = float(boundary_weight)
         self.min_len = int(min_len_bins)
-        self.max_len = int(max_len_bins)
         self.pair_hard_window = int(pair_hard_window)
-        self.use_pair_hard_negatives = bool(use_pair_hard_negatives)
 
-    def _pair_loss(
+    def pair_loss(
         self,
         left_pred: torch.Tensor,
         right_pred: torch.Tensor,
-        tads_list: list,
+        tads_list: List[torch.Tensor],
     ) -> torch.Tensor:
-        bsz, n_bins = left_pred.shape
-        device = left_pred.device
-        total_loss = left_pred.new_tensor(0.0)
+        left_pred = left_pred.float()
+        right_pred = right_pred.float()
+        batch_size, n_bins = left_pred.shape
+        total = left_pred.new_tensor(0.0)
         valid_samples = 0
 
-        for b in range(bsz):
-            tads = tads_list[b]
+        for batch_idx in range(batch_size):
+            tads = tads_list[batch_idx]
             if tads is None or len(tads) == 0:
                 continue
+            tads = tads.to(left_pred.device)
             valid_tads = tads[tads[:, 0] >= 0]
             if len(valid_tads) == 0:
                 continue
 
             left_idx = valid_tads[:, 0].long()
             right_idx = valid_tads[:, 1].long()
-            valid_pairs = (left_idx < n_bins) & (right_idx < n_bins) & (left_idx < right_idx)
-            left_idx = left_idx[valid_pairs]
-            right_idx = right_idx[valid_pairs]
+            valid = (left_idx < n_bins) & (right_idx < n_bins) & (left_idx < right_idx)
+            left_idx = left_idx[valid]
+            right_idx = right_idx[valid]
             if len(left_idx) == 0:
                 continue
 
-            left_scores = left_pred[b, left_idx]
-            right_scores = right_pred[b, right_idx]
-            pos_scores = (left_scores * right_scores).clamp(1e-6, 1 - 1e-6)
-            pos_loss = F.binary_cross_entropy(pos_scores, torch.ones_like(pos_scores))
+            positive = (
+                left_pred[batch_idx, left_idx] * right_pred[batch_idx, right_idx]
+            ).clamp(1e-6, 1.0 - 1e-6)
+            positive_loss = -torch.log(positive).mean()
 
-            neg_parts = []
+            negative_parts = []
             if len(left_idx) > 1:
                 shifted_right = torch.roll(right_idx, shifts=1)
-                neg_parts.append((left_pred[b, left_idx] * right_pred[b, shifted_right]).clamp(1e-6, 1 - 1e-6))
-
-            if self.use_pair_hard_negatives and self.pair_hard_window > 0:
-                jitter = torch.randint(
-                    low=-self.pair_hard_window,
-                    high=self.pair_hard_window + 1,
-                    size=right_idx.shape,
-                    device=device,
+                negative_parts.append(
+                    (
+                        left_pred[batch_idx, left_idx]
+                        * right_pred[batch_idx, shifted_right]
+                    ).clamp(1e-6, 1.0 - 1e-6)
                 )
-                jitter = torch.where(jitter == 0, torch.ones_like(jitter), jitter)
-                jitter_right = (right_idx + jitter).clamp(min=0, max=n_bins - 1)
-                valid_jitter = jitter_right > (left_idx + self.min_len - 1)
-                if valid_jitter.any():
-                    neg_parts.append(
-                        (left_pred[b, left_idx[valid_jitter]] * right_pred[b, jitter_right[valid_jitter]]).clamp(
-                            1e-6, 1 - 1e-6
-                        )
-                    )
 
-            if neg_parts:
-                neg_scores = torch.cat(neg_parts)
-                neg_loss = F.binary_cross_entropy(neg_scores, torch.zeros_like(neg_scores))
+            jitter = torch.randint(
+                -self.pair_hard_window,
+                self.pair_hard_window + 1,
+                right_idx.shape,
+                device=left_pred.device,
+            )
+            jitter = torch.where(jitter == 0, torch.ones_like(jitter), jitter)
+            jitter_right = (right_idx + jitter).clamp(0, n_bins - 1)
+            valid_jitter = jitter_right > (left_idx + self.min_len - 1)
+            if valid_jitter.any():
+                negative_parts.append(
+                    (
+                        left_pred[batch_idx, left_idx[valid_jitter]]
+                        * right_pred[batch_idx, jitter_right[valid_jitter]]
+                    ).clamp(1e-6, 1.0 - 1e-6)
+                )
+
+            if negative_parts:
+                negative = torch.cat(negative_parts)
+                negative_loss = -torch.log1p(-negative).mean()
             else:
-                neg_loss = left_pred.new_tensor(0.0)
+                negative_loss = left_pred.new_tensor(0.0)
 
-            total_loss = total_loss + pos_loss + 0.5 * neg_loss
+            total = total + positive_loss + 0.5 * negative_loss
             valid_samples += 1
 
-        return total_loss / max(valid_samples, 1)
+        return total / max(valid_samples, 1)
 
-    def _count_loss(
-        self,
+    @staticmethod
+    def count_loss(
         left_pred: torch.Tensor,
         right_pred: torch.Tensor,
         left_count_gt: torch.Tensor,
         right_count_gt: torch.Tensor,
     ) -> torch.Tensor:
-        pred_left_count = left_pred.sum(dim=1)
-        pred_right_count = right_pred.sum(dim=1)
-        gt_left_count = left_count_gt.float().squeeze(-1)
-        gt_right_count = right_count_gt.float().squeeze(-1)
-        return F.l1_loss(pred_left_count, gt_left_count) + F.l1_loss(pred_right_count, gt_right_count)
+        pred_left = left_pred.float().sum(dim=1)
+        pred_right = right_pred.float().sum(dim=1)
+        gt_left = left_count_gt.float().squeeze(-1)
+        gt_right = right_count_gt.float().squeeze(-1)
+        return F.l1_loss(pred_left, gt_left) + F.l1_loss(pred_right, gt_right)
 
-    def forward(
-        self,
-        outputs: Dict[str, torch.Tensor],
-        targets: Dict[str, torch.Tensor],
-        tads_list: Optional[list] = None,
-    ) -> Dict[str, torch.Tensor]:
+    @staticmethod
+    def boundary_loss(
+        left_pred: torch.Tensor,
+        right_pred: torch.Tensor,
+        left_mask: torch.Tensor,
+        right_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        left_pred = left_pred.float().clamp(1e-6, 1.0 - 1e-6)
+        right_pred = right_pred.float().clamp(1e-6, 1.0 - 1e-6)
+        return F.binary_cross_entropy(left_pred, left_mask.float()) + F.binary_cross_entropy(
+            right_pred, right_mask.float()
+        )
+
+    def forward(self, outputs: dict, targets: dict, tads_list: List[torch.Tensor]) -> dict:
         left = outputs["left_boundary"]
         right = outputs["right_boundary"]
-        device = left.device
+        zero = (left.sum() + right.sum()) * 0.0
 
-        if self.w_pair > 0 and tads_list is not None:
-            pair_loss = self._pair_loss(left, right, tads_list)
-        else:
-            pair_loss = torch.tensor(0.0, device=device)
-
-        if self.w_count > 0 and "left_count_gt" in targets and "right_count_gt" in targets:
-            count_loss = self._count_loss(left, right, targets["left_count_gt"], targets["right_count_gt"])
-        else:
-            count_loss = torch.tensor(0.0, device=device)
-
-        total = self.w_pair * pair_loss + self.w_count * count_loss
-        return {
-            "pair": pair_loss,
-            "count": count_loss,
-            "loss": total,
-        }
+        pair = self.pair_loss(left, right, tads_list) if self.pair_weight > 0 else zero
+        count = (
+            self.count_loss(left, right, targets["left_count_gt"], targets["right_count_gt"])
+            if self.count_weight > 0
+            else zero
+        )
+        boundary = (
+            self.boundary_loss(left, right, targets["left_mask"], targets["right_mask"])
+            if self.boundary_weight > 0
+            else zero
+        )
+        loss = (
+            self.pair_weight * pair
+            + self.count_weight * count
+            + self.boundary_weight * boundary
+        )
+        return {"loss": loss, "pair": pair, "count": count, "boundary": boundary}

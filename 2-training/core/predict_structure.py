@@ -1,387 +1,349 @@
 #!/usr/bin/env python3
-"""Minimal ContextTAD decoder for boundary-based TAD prediction.
-
-This script intentionally keeps only the active decode path used by current
-reproducible evaluation:
-  1) aggregate window-level left/right predictions
-  2) cross pair left-right peaks under length constraints
-  3) score by logit fusion (left/right)
-  4) NMS + top-k per chromosome
-  5) export raw BED in end-exclusive coordinates
-"""
+from __future__ import annotations
 
 import argparse
 import json
 import os
 import random
+import sys
+import zlib
 from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
 import torch
-from PIL import Image
+from scipy.signal import find_peaks
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT = SCRIPT_DIR.parent.parent
-import sys
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from train import INFERENCE_PROMPT, TAD_SAM3_Structure
-from transformers import CLIPTokenizer, Sam3Processor
+from model import ContextTADBackboneModel  # type: ignore
+from train import normalize_matrix  # type: ignore
 
-SAM3_PATH = os.environ.get("SAM3_PATH", "/home/weicai/projectnvme/TADAnno/sam3")
-DEFAULT_DATA_DIR = Path("/home/weicai/projectnvme/TADAnno_final_v2/0-data/1_dp_train_infer_data")
-DATA_DIR = Path(os.environ.get("TAD_DATA_DIR", str(DEFAULT_DATA_DIR)))
-if not DATA_DIR.exists():
-    DATA_DIR = Path("/home/weicai/projectnvme/TADAnno_final_v2/0-data/1_dp_train_infer_data")
-
+PROJECT_ROOT = SCRIPT_DIR.parents[1]
+DEFAULT_DATA_DIR = Path(
+    os.environ.get("TAD_DATA_DIR", str(PROJECT_ROOT / "0-data" / "1_dp_train_infer_data"))
+)
 RESOLUTION = 5000
-
-# Fixed decode parameters (validated repro path)
-DEFAULT_METHOD = "text_oe"
-LORA_R = 16
-THRESHOLD = 0.3
 MIN_LEN_BINS = 5
 MAX_LEN_BINS = 350
-TOP_K_PER_CHROM = 5000
 NMS_METRIC = "iou"
 NMS_THRESH = 0.5
 ALLOW_NESTED = True
-
-
 W_LEFT = 1.0
 W_RIGHT = 1.0
 
-PROMPT_PRESETS = {
-    "default": INFERENCE_PROMPT,
-    "p1": "topologically associating domain",
-    "p2": "a dog in the park",
-    "p3": "non-topologically associating domain in Hi-C contact map",
-}
 
-
-def set_reproducible_seed(seed: int) -> None:
+def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
-def _safe_logit(x: float, eps: float = 1e-6) -> float:
-    x = float(np.clip(x, eps, 1.0 - eps))
-    return float(np.log(x / (1.0 - x)))
+def stable_seed(text: str, base: int = 66) -> int:
+    return (base + zlib.adler32(text.encode("utf-8"))) % (2**32 - 1)
 
 
-def load_model(ckpt_path: str, method: str = "auto", force_disable_text: bool = False):
+def diagonal_preserving_decoy(arr: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Shuffle each genomic-distance diagonal while preserving symmetry."""
+    x = np.asarray(arr, dtype=np.float32)
+    n = x.shape[0]
+    out = np.zeros_like(x, dtype=np.float32)
+    diag = np.diag(x).copy()
+    rng.shuffle(diag)
+    np.fill_diagonal(out, diag)
+    for d in range(1, n):
+        vals = np.diag(x, k=d).copy()
+        rng.shuffle(vals)
+        i = np.arange(n - d)
+        out[i, i + d] = vals
+        out[i + d, i] = vals
+    return out
+
+
+def load_model(ckpt_path: str, device: torch.device):
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    ckpt_args = ckpt.get("args") if isinstance(ckpt, dict) else None
-    if not isinstance(ckpt_args, dict):
-        ckpt_args = {}
+    args = ckpt.get("args", {}) if isinstance(ckpt, dict) else {}
+    backbone = args.get("backbone", "unet_decoder")
+    hidden = int(args.get("hidden", 128))
+    diag_radius = int(args.get("diag_radius", 50))
+    model = ContextTADBackboneModel(hidden=hidden, diag_radius=diag_radius, backbone=backbone or "unet_decoder")
+    model.load_state_dict(ckpt["model"], strict=True)
+    model.to(device).eval()
+    return model, args
 
-    prompt_policy = str(ckpt_args.get("prompt_policy", "fixed"))
-    if prompt_policy != "fixed":
-        raise ValueError(
-            f"Checkpoint prompt_policy='{prompt_policy}' is not supported in inference. "
-            "Use fixed prompt policy for train/infer consistency."
-        )
 
-    ckpt_method = str(ckpt_args.get("method", DEFAULT_METHOD))
-    model_method = ckpt_method if method == "auto" else method
+def fdr_cutoff(target: np.ndarray, decoy: np.ndarray, alpha: float) -> float:
+    target = np.asarray(target, dtype=np.float32)
+    decoy = np.asarray(decoy, dtype=np.float32)
+    if len(target) == 0:
+        return float("inf")
+    if len(decoy) == 0:
+        return float(np.min(target))
+    vals = np.concatenate([target, decoy])
+    labels = np.concatenate([np.ones(len(target), dtype=bool), np.zeros(len(decoy), dtype=bool)])
+    order = np.argsort(vals)[::-1]
+    vals = vals[order]
+    labels = labels[order]
+    nt = 0
+    nd = 0
+    cutoff = float("inf")
+    eps = np.finfo(float).eps
+    for val, is_target in zip(vals, labels):
+        if is_target:
+            nt += 1
+        else:
+            nd += 1
+        if nt > 0 and (nd / (nt + eps)) <= alpha:
+            cutoff = float(val)
+    return cutoff
 
-    use_oe = model_method == "text_oe"
-    use_text = model_method in ("text_obs", "text_oe")
-    if bool(ckpt_args.get("disable_text_branch", False)) or force_disable_text:
-        use_text = False
 
-    use_tofe = not bool(ckpt_args.get("disable_tofe", False))
-    tofe_mix = float(ckpt_args.get("tofe_mix", 1.0))
+def peak_metrics(scores: np.ndarray, peak_radius: int, metric: str) -> Tuple[np.ndarray, np.ndarray]:
+    peaks, props = find_peaks(scores, distance=peak_radius * 2 + 1, prominence=(None, None))
+    peaks = peaks.astype(np.int32)
+    if len(peaks) == 0:
+        return peaks, np.zeros(0, dtype=np.float32)
+    if metric == "height":
+        values = scores[peaks].astype(np.float32)
+    elif metric == "prominence":
+        values = props.get("prominences", np.zeros(len(peaks), dtype=np.float32)).astype(np.float32)
+    else:
+        raise ValueError(f"Unknown fdr metric: {metric}")
+    return peaks, values
 
-    model = TAD_SAM3_Structure(
-        method=model_method,
-        lora_r=LORA_R,
-        use_tofe=use_tofe,
-        tofe_mix=tofe_mix,
-        force_use_text=use_text,
-        force_use_oe=use_oe,
-    )
 
-    model.load_state_dict(ckpt["model"], strict=False)
-    model.eval()
-
-    info = {
-        "method": model_method,
-        "use_oe": use_oe,
-        "use_text": use_text,
-        "use_tofe": use_tofe,
-    }
-    return model.cuda(), info
+def select_fdr_peaks(target_scores: np.ndarray, decoy_scores: np.ndarray, peak_radius: int, alpha: float, metric: str) -> Tuple[np.ndarray, float, int, int]:
+    target_peaks, target_values = peak_metrics(target_scores, peak_radius, metric)
+    decoy_peaks, decoy_values = peak_metrics(decoy_scores, peak_radius, metric)
+    cutoff = fdr_cutoff(target_values, decoy_values, alpha)
+    if len(target_peaks) == 0 or not np.isfinite(cutoff):
+        return np.zeros(0, dtype=np.int32), cutoff, int(len(target_peaks)), int(len(decoy_peaks))
+    selected = target_peaks[target_values >= cutoff]
+    return selected.astype(np.int32), cutoff, int(len(target_peaks)), int(len(decoy_peaks))
 
 
 def pair_boundaries(
     left_scores: np.ndarray,
     right_scores: np.ndarray,
-    threshold: float,
+    left_candidates: np.ndarray,
+    right_candidates: np.ndarray,
     min_len_bins: int,
     max_len_bins: int,
-    top_k: int,
-    w_left: float,
-    w_right: float,
     nms_metric: str,
     nms_thresh: float,
     allow_nested: bool,
 ) -> List[Tuple[int, int, float]]:
-    left_candidates = np.where(left_scores > threshold)[0]
-    right_candidates = np.where(right_scores > threshold)[0]
+    left_candidates = np.asarray(left_candidates, dtype=np.int32)
+    right_candidates = np.asarray(right_candidates, dtype=np.int32)
+    left_candidates.sort()
+    right_candidates.sort()
     if len(left_candidates) == 0 or len(right_candidates) == 0:
         return []
 
-    candidates: List[Tuple[int, int, float]] = []
-    for l in left_candidates:
-        for r in right_candidates:
-            length = r - l + 1
-            if l >= r or length < min_len_bins or length > max_len_bins:
-                continue
-            score_logit = (
-                w_left * _safe_logit(left_scores[l])
-                + w_right * _safe_logit(right_scores[r])
-            )
-            score = 1.0 / (1.0 + np.exp(-score_logit))
-            candidates.append((int(l), int(r), float(score)))
+    left_prob_all = np.clip(left_scores[left_candidates], 1e-6, 1.0 - 1e-6).astype(np.float32)
+    right_prob_all = np.clip(right_scores[right_candidates], 1e-6, 1.0 - 1e-6).astype(np.float32)
 
-    if not candidates:
+    l_chunks = []
+    r_chunks = []
+    score_chunks = []
+    for l, l_prob in zip(left_candidates, left_prob_all):
+        lo = int(l) + min_len_bins - 1
+        hi = int(l) + max_len_bins - 1
+        a = int(np.searchsorted(right_candidates, lo, side="left"))
+        b = int(np.searchsorted(right_candidates, hi, side="right"))
+        if b <= a:
+            continue
+        rs = right_candidates[a:b]
+        scores = float(l_prob) * right_prob_all[a:b]
+        l_chunks.append(np.full(len(rs), int(l), dtype=np.int32))
+        r_chunks.append(rs.astype(np.int32, copy=False))
+        score_chunks.append(scores.astype(np.float32, copy=False))
+
+    if not l_chunks:
         return []
 
-    candidates.sort(key=lambda x: x[2], reverse=True)
+    cand_l = np.concatenate(l_chunks)
+    cand_r = np.concatenate(r_chunks)
+    cand_scores = np.concatenate(score_chunks)
+    order = np.argsort(cand_scores)[::-1]
+    max_select = len(cand_scores)
 
-    selected: List[Tuple[int, int, float]] = []
-    for l, r, sc in candidates:
-        overlap = False
-        for sl, sr, _ in selected:
-            inter = min(r, sr) - max(l, sl) + 1
-            if inter <= 0:
-                continue
+    sel_l = np.empty(max_select, dtype=np.int32)
+    sel_r = np.empty(max_select, dtype=np.int32)
+    sel_score = np.empty(max_select, dtype=np.float32)
+    nsel = 0
 
-            if allow_nested:
-                contained = (l >= sl and r <= sr) or (sl >= l and sr <= r)
-                if contained:
-                    continue
+    for idx in order:
+        l = int(cand_l[idx])
+        r = int(cand_r[idx])
+        if nsel:
+            sl = sel_l[:nsel]
+            sr = sel_r[:nsel]
+            inter = np.minimum(r, sr) - np.maximum(l, sl) + 1
+            overlap_mask = inter > 0
+            if overlap_mask.any():
+                if allow_nested:
+                    contained = ((l >= sl) & (r <= sr)) | ((sl >= l) & (sr <= r))
+                    overlap_mask = overlap_mask & (~contained)
+                if overlap_mask.any():
+                    len1 = r - l + 1
+                    len2 = sr[overlap_mask] - sl[overlap_mask] + 1
+                    inter2 = inter[overlap_mask].astype(np.float32)
+                    if nms_metric == "iou":
+                        suppress = inter2 / np.maximum(len1 + len2 - inter2, 1.0)
+                    else:
+                        suppress = inter2 / np.maximum(np.minimum(len1, len2), 1.0)
+                    if np.any(suppress > nms_thresh):
+                        continue
+        sel_l[nsel] = l
+        sel_r[nsel] = r
+        sel_score[nsel] = float(cand_scores[idx])
+        nsel += 1
+        if nsel >= max_select:
+            break
 
-            len1 = r - l + 1
-            len2 = sr - sl + 1
-            if nms_metric == "iou":
-                union = len1 + len2 - inter
-                suppress_score = inter / max(union, 1)
-            else:
-                suppress_score = inter / max(min(len1, len2), 1)
-
-            if suppress_score > nms_thresh:
-                overlap = True
-                break
-
-        if not overlap:
-            selected.append((l, r, sc))
-            if len(selected) >= top_k:
-                break
-
-    return selected
+    return [(int(sel_l[i]), int(sel_r[i]), float(sel_score[i])) for i in range(nsel)]
 
 
-def predict_chromosome(
-    model,
-    chrom: str,
-    data_dir: Path,
-    cov: str,
-    processor,
-    tokenizer,
-    use_oe: bool,
-    use_text: bool,
-    prompt_text: str,
-) -> List[Tuple[str, int, int, float]]:
+def aggregate_target_decoy_tracks(model, chrom: str, data_dir: Path, cov: str, use_oe: bool, device: torch.device, seed: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     cov_dir = data_dir / cov / chrom
     if not cov_dir.exists():
-        return []
-
-    with open(data_dir / "window_list.json") as f:
+        z = np.zeros(0, dtype=np.float32)
+        return z, z, z, z
+    with (data_dir / "window_list.json").open() as f:
         wl = json.load(f)
-    test_windows = wl["windows"]["test"]
-    win_names = sorted([w for w in test_windows if w.startswith(chrom + "_")])
-    if not win_names:
-        return []
-
-    text_ids = text_mask = None
-    if use_text and tokenizer is not None:
-        tok = tokenizer(
-            prompt_text,
-            return_tensors="pt",
-            padding="max_length",
-            max_length=32,
-            truncation=True,
-        )
-        text_ids = tok["input_ids"].cuda()
-        text_mask = tok["attention_mask"].cuda()
-
-    chrom_size = max(int(w.split("_")[-1]) for w in win_names) + 400
-
-    left_strength = np.zeros(chrom_size, dtype=np.float32)
-    right_strength = np.zeros(chrom_size, dtype=np.float32)
+    test_windows = sorted([w for w in wl["windows"]["test"] if w.startswith(chrom + "_")])
+    if not test_windows:
+        z = np.zeros(0, dtype=np.float32)
+        return z, z, z, z
+    chrom_size = max(int(w.split("_")[-1]) for w in test_windows) + 400
+    lt = np.zeros(chrom_size, dtype=np.float32)
+    rt = np.zeros(chrom_size, dtype=np.float32)
+    ld = np.zeros(chrom_size, dtype=np.float32)
+    rd = np.zeros(chrom_size, dtype=np.float32)
     count = np.zeros(chrom_size, dtype=np.float32)
-
-    for wn in win_names:
+    for wn in test_windows:
         offset = int(wn.split("_")[-1])
         npy_path = cov_dir / f"{wn}.npy"
         if not npy_path.exists():
             continue
-
         mat = np.load(npy_path)
-        obs = mat[1] if use_oe else mat[0]
-
-        if use_oe:
-            lm = np.log1p(obs.astype(np.float32))
-        else:
-            lm = np.log10(obs.astype(np.float32) + 1)
-        mx = max(lm.max(), 1e-6)
-        inv = (mx - lm) / mx
-        oe_values = np.clip(lm / mx, 0.0, 1.0).astype(np.float32)
-        rgb = np.stack([np.ones_like(lm) * 255, inv * 255, inv * 255], axis=-1).astype(np.uint8)
-        pv = processor(images=Image.fromarray(rgb, "RGB"), return_tensors="pt")["pixel_values"].cuda()
-
-        fwd_kwargs = {
-            "pixel_values": pv,
-            "oe_values": torch.from_numpy(oe_values).unsqueeze(0).unsqueeze(0).cuda(),
-        }
-        if use_text and text_ids is not None:
-            fwd_kwargs["text_input_ids"] = text_ids
-            if text_mask is not None:
-                fwd_kwargs["text_attention_mask"] = text_mask
-
-        with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.float16):
-            outputs = model(**fwd_kwargs)
-            left_pred = outputs["left_boundary"].float().cpu().numpy().squeeze()
-            right_pred = outputs["right_boundary"].float().cpu().numpy().squeeze()
-
-        for i in range(len(left_pred)):
-            gi = offset + i
-            if gi < chrom_size:
-                left_strength[gi] += left_pred[i]
-                right_strength[gi] += right_pred[i]
-                count[gi] += 1.0
-
+        arr = mat[1] if use_oe else mat[0]
+        rng = np.random.default_rng(stable_seed(f"{cov}:{chrom}:{wn}", seed))
+        decoy = diagonal_preserving_decoy(arr, rng)
+        batch = np.stack([normalize_matrix(arr), normalize_matrix(decoy)], axis=0)
+        x = torch.from_numpy(batch).unsqueeze(1).to(device)
+        with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.float16, enabled=(device.type == "cuda")):
+            out = model(x)
+            left = out["left_boundary"].float().cpu().numpy()
+            right = out["right_boundary"].float().cpu().numpy()
+        n = left.shape[1]
+        idx = np.arange(n) + offset
+        valid = idx < chrom_size
+        idx = idx[valid]
+        lt[idx] += left[0, valid]
+        rt[idx] += right[0, valid]
+        ld[idx] += left[1, valid]
+        rd[idx] += right[1, valid]
+        count[idx] += 1.0
     valid = count > 0
-    left_strength[valid] /= count[valid]
-    right_strength[valid] /= count[valid]
+    lt[valid] /= count[valid]
+    rt[valid] /= count[valid]
+    ld[valid] /= count[valid]
+    rd[valid] /= count[valid]
+    return lt, rt, ld, rd
 
+
+def predict_chromosome(model, chrom: str, data_dir: Path, cov: str, use_oe: bool, device: torch.device, peak_radius: int, fdr_alpha: float, fdr_metric: str, seed: int) -> Tuple[List[Tuple[str, int, int, float]], dict]:
+    left_t, right_t, left_d, right_d = aggregate_target_decoy_tracks(model, chrom, data_dir, cov, use_oe, device, seed)
+    left_candidates, left_cutoff, left_target_peaks, left_decoy_peaks = select_fdr_peaks(left_t, left_d, peak_radius, fdr_alpha, fdr_metric)
+    right_candidates, right_cutoff, right_target_peaks, right_decoy_peaks = select_fdr_peaks(right_t, right_d, peak_radius, fdr_alpha, fdr_metric)
     tads = pair_boundaries(
-        left_scores=left_strength,
-        right_scores=right_strength,
-        threshold=THRESHOLD,
-        min_len_bins=MIN_LEN_BINS,
-        max_len_bins=MAX_LEN_BINS,
-        top_k=TOP_K_PER_CHROM,
-        w_left=W_LEFT,
-        w_right=W_RIGHT,
-        nms_metric=NMS_METRIC,
-        nms_thresh=NMS_THRESH,
-        allow_nested=ALLOW_NESTED,
+        left_t,
+        right_t,
+        left_candidates,
+        right_candidates,
+        MIN_LEN_BINS,
+        MAX_LEN_BINS,
+        NMS_METRIC,
+        NMS_THRESH,
+        ALLOW_NESTED,
     )
-
-    result: List[Tuple[str, int, int, float]] = []
+    result = []
     for start_bin, end_bin, score in tads:
         start_bp = start_bin * RESOLUTION
-        # Keep end-exclusive raw BED semantics. Postprocess converts to right-boundary coordinate.
         end_bp = (end_bin + 1) * RESOLUTION
         result.append((chrom, start_bp, end_bp, float(score)))
-
-    return result
+    stats = {
+        "left_target_peaks": left_target_peaks,
+        "left_decoy_peaks": left_decoy_peaks,
+        "left_selected": int(len(left_candidates)),
+        "left_cutoff": float(left_cutoff) if np.isfinite(left_cutoff) else "inf",
+        "right_target_peaks": right_target_peaks,
+        "right_decoy_peaks": right_decoy_peaks,
+        "right_selected": int(len(right_candidates)),
+        "right_cutoff": float(right_cutoff) if np.isfinite(right_cutoff) else "inf",
+        "tads": int(len(tads)),
+    }
+    return result, stats
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Minimal ContextTAD decoder")
-    p.add_argument("--ckpt", required=True, help="Path to trained model checkpoint")
-    p.add_argument("--output_dir", required=True, help="Output directory for predictions")
-    p.add_argument("--coverages", nargs="+", default=["4000M"], help="Coverage levels to predict")
-    p.add_argument("--seed", type=int, default=42, help="Random seed")
-    p.add_argument("--chroms", nargs="+", default=["chr15", "chr16", "chr17"], help="Chromosomes to predict")
-    p.add_argument(
-        "--method",
-        default="auto",
-        choices=["auto", "text_obs", "text_oe"],
-        help="Model method. auto: infer from checkpoint args.",
-    )
-    p.add_argument(
-        "--disable_text_branch",
-        action="store_true",
-        help="Force-disable text branch at inference regardless of checkpoint args.",
-    )
-    p.add_argument(
-        "--output_prefix",
-        default="ContextTAD_structure",
-        help="Raw BED output filename prefix; final file is <prefix>_<coverage>.bed",
-    )
-    p.add_argument(
-        "--prompt_id",
-        default="default",
-        choices=["default", "p1", "p2", "p3"],
-        help="Inference prompt preset.",
-    )
+    p = argparse.ArgumentParser(description="Predict raw TAD candidates with RefHiC-style boundary FDR")
+    p.add_argument("--ckpt", required=True)
+    p.add_argument("--data_dir", default=str(DEFAULT_DATA_DIR))
+    p.add_argument("--output_dir", required=True)
+    p.add_argument("--coverages", nargs="+", default=["4000M"])
+    p.add_argument("--chroms", nargs="+", default=["chr15", "chr16", "chr17"])
+    p.add_argument("--seed", type=int, default=66)
+    p.add_argument("--output_prefix", default="ContextTAD_structure")
+    p.add_argument("--peak_radius", type=int, default=5)
+    p.add_argument("--fdr_alpha", type=float, default=0.005)
+    p.add_argument("--fdr_metric", choices=["prominence", "height"], default="prominence")
     args = p.parse_args()
-
-    out = Path(args.output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-
-    set_reproducible_seed(args.seed)
-
-    print(f"Loading model from {args.ckpt}")
-    model, model_info = load_model(
-        args.ckpt,
-        method=args.method,
-        force_disable_text=args.disable_text_branch,
-    )
-
-    processor = Sam3Processor.from_pretrained(SAM3_PATH)
-    tokenizer = CLIPTokenizer.from_pretrained(SAM3_PATH) if model_info["use_text"] else None
-
-    print(f"Predicting for chromosomes: {args.chroms}")
-    print(f"Coverage levels: {args.coverages}")
+    set_seed(args.seed)
+    data_dir = Path(args.data_dir)
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, ckpt_args = load_model(args.ckpt, device)
+    use_oe = not bool(ckpt_args.get("use_obs", False))
+    print(f"Loaded {args.ckpt}")
+    print(f"backbone={ckpt_args.get('backbone')} diag_radius={ckpt_args.get('diag_radius', 50)} use_oe={use_oe}")
     print(
-        "Model config: "
-        f"method={model_info['method']} use_oe={model_info['use_oe']} "
-        f"use_text={model_info['use_text']} use_tofe={model_info['use_tofe']}"
+        f"decode=target_decoy_fdr_endpoint_product metric={args.fdr_metric} "
+        f"alpha={args.fdr_alpha} peak_radius={args.peak_radius}"
     )
-    print(f"Threshold: {THRESHOLD}, Min length: {MIN_LEN_BINS} bins")
-    print(f"Seed: {args.seed}")
-    print(f"Fusion weights: left={W_LEFT}, right={W_RIGHT}")
-    print(f"Top-K per chromosome: {TOP_K_PER_CHROM}")
-    print(f"Suppression: metric={NMS_METRIC}, thresh={NMS_THRESH}, allow_nested={ALLOW_NESTED}")
-    prompt_text = PROMPT_PRESETS.get(args.prompt_id, INFERENCE_PROMPT)
-    print(f"Prompt preset: {args.prompt_id}")
-    print(f"Prompt text: {prompt_text}")
-    print("Cross-attn text mask enabled: True")
-
     for cov in args.coverages:
-        all_tads: List[Tuple[str, int, int, float]] = []
-        for ch in args.chroms:
-            tads = predict_chromosome(
-                model=model,
-                chrom=ch,
-                data_dir=DATA_DIR,
-                cov=cov,
-                processor=processor,
-                tokenizer=tokenizer,
-                use_oe=model_info["use_oe"],
-                use_text=model_info["use_text"],
-                prompt_text=prompt_text,
+        all_tads = []
+        for chrom in args.chroms:
+            tads, stats = predict_chromosome(
+                model,
+                chrom,
+                data_dir,
+                cov,
+                use_oe,
+                device,
+                args.peak_radius,
+                args.fdr_alpha,
+                args.fdr_metric,
+                args.seed,
             )
             all_tads.extend(tads)
-            print(f"  {ch}: {len(tads)} TADs")
-
-        bed_path = out / f"{args.output_prefix}_{cov}.bed"
-        with open(bed_path, "w") as f:
+            print(
+                f"  {cov} {chrom}: "
+                f"L={stats['left_selected']}/{stats['left_target_peaks']} cutoff={stats['left_cutoff']} decoyL={stats['left_decoy_peaks']} "
+                f"R={stats['right_selected']}/{stats['right_target_peaks']} cutoff={stats['right_cutoff']} decoyR={stats['right_decoy_peaks']} "
+                f"TAD={stats['tads']}",
+                flush=True,
+            )
+        path = out_dir / f"{args.output_prefix}_{cov}.bed"
+        with path.open("w") as f:
             for c, s, e, sc in sorted(all_tads):
                 f.write(f"{c}\t{s}\t{e}\t{sc:.6f}\n")
-        print(f"[{cov}] Total: {len(all_tads)} TADs -> {bed_path}")
-
-    print("\nPrediction complete!")
+        print(f"[{cov}] total={len(all_tads)} -> {path}", flush=True)
 
 
 if __name__ == "__main__":

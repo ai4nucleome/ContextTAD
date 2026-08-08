@@ -19,18 +19,18 @@ LATEST_LINK="${STEP_DIR}/outputs/exp2_struct_protein/latest"
 mkdir -p "${RESULTS_DIR}" "${SUMMARY_DIR}"
 
 declare -A METHOD_BED
-METHOD_BED[base]="${BASE_BED:-$STEP_DIR/outputs/eval_base_epoch005_valrand_dualratio_decodefix_20260305/beds/GM12878_250M_contexttad.bed}"
-METHOD_BED[no_tofe]="${NO_TOFE_BED:-$STEP_DIR/outputs/eval_no_tofe_epoch005_valrand_dualratio_decodefix_20260305/beds/GM12878_250M_contexttad.bed}"
-METHOD_BED[no_text]="${NO_TEXT_BED:-$STEP_DIR/outputs/eval_no_text_epoch005_valrand_dualratio_decodefix_20260305/beds/GM12878_250M_contexttad.bed}"
-METHOD_BED[no_pairloss]="${NO_PAIRLOSS_BED:-$STEP_DIR/outputs/eval_no_pairloss_epoch005_valrand_dualratio_decodefix_20260305/beds/GM12878_250M_contexttad.bed}"
-METHOD_BED[obs_input]="${OBS_INPUT_BED:-$STEP_DIR/outputs/eval_obsinput_epoch005_valrand_dualratio_decodefix_20260305/beds/GM12878_250M_contexttad.bed}"
+METHOD_BED[base]="${BASE_BED:-}"
+METHOD_BED[obs_input]="${OBS_INPUT_BED:-}"
+METHOD_BED[no_pairloss]="${NO_PAIRLOSS_BED:-}"
+METHOD_BED[no_count]="${NO_COUNT_BED:-}"
+METHOD_BED[boundary_count]="${BOUNDARY_COUNT_BED:-}"
 
 METHOD_ORDER=(
   base
-  no_tofe
-  no_text
-  no_pairloss
   obs_input
+  no_pairloss
+  no_count
+  boundary_count
 )
 
 if [[ ! -x "$EXP2_RUNNER" ]]; then
@@ -40,8 +40,8 @@ fi
 
 for method in "${METHOD_ORDER[@]}"; do
   bed_path="${METHOD_BED[$method]}"
-  if [[ ! -f "${bed_path}" ]]; then
-    echo "[error] bed not found for ${method}: ${bed_path}" >&2
+  if [[ -z "$bed_path" || ! -f "$bed_path" ]]; then
+    echo "[error] set the ${method} BED environment variable before running" >&2
     exit 2
   fi
 done

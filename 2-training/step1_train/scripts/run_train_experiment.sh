@@ -1,65 +1,85 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Train one experiment under model_analysis strategy + val-random-coverage:
-#   - train_sampling: random_single (keep model_analysis legacy behavior)
-#   - val_sampling  : random_single (new change, same as train)
-# Usage:
-#   bash run_train_experiment.sh <exp_name> <gpu_ids> [run_id] [init_ckpt_or_none] [epochs] [batch_size] [master_port]
-# exp_name:
-#   base | no_tofe | no_text | no_pairloss | no_count | obs_input
-# gpu_ids examples:
-#   3          -> single GPU
-#   1,2,3,4    -> DDP on 4 GPUs
-# Optional external override:
-#   EXTRA_TRAIN_ARGS="--count_weight 0.0" bash run_train_experiment.sh ...
-# Notes:
-#   - EXTRA_TRAIN_ARGS are appended at the end, so they override defaults above.
+usage() {
+  cat <<'EOF'
+Usage:
+  bash run_train_experiment.sh --experiment NAME --gpu-ids IDS [options]
 
-EXP_NAME="${1:?Usage: $0 <exp_name> <gpu_ids> [run_id] [init_ckpt_or_none] [epochs] [batch_size] [master_port]}"
-GPU_SPEC_RAW="${2:?Usage: $0 <exp_name> <gpu_ids> [run_id] [init_ckpt_or_none] [epochs] [batch_size] [master_port]}"
-RUN_ID="${3:-train_${EXP_NAME}_modelanalysis_valrand_$(date +%Y%m%d_%H%M%S)}"
-INIT_CKPT="${4:-none}"
-EPOCHS="${5:-10}"
-BATCH_SIZE="${6:-2}"
-MASTER_PORT="${7:-}"
-STOP_AFTER_EPOCH="${STOP_AFTER_EPOCH:-0}"
+Required:
+  --experiment NAME    base | obs_input | no_pairloss | no_count | boundary_count
+  --gpu-ids IDS        Comma-separated GPU IDs exposed to Accelerate, for example 0 or 0,1
+
+Options:
+  --run-id ID          Output run ID (default: train_<experiment>_<timestamp>)
+  --epochs N           Number of training epochs (default: 50)
+  --batch-size N       Batch size per GPU process (default: 16)
+  --master-port PORT   Accelerate main-process port for multi-GPU training
+  --data-dir PATH      Processed training-data directory
+  --output-root PATH   Parent directory for training runs
+  -h, --help           Show this help message
+EOF
+}
+
+EXP_NAME=""
+GPU_SPEC_RAW=""
+RUN_ID=""
+EPOCHS=50
+BATCH_SIZE=16
+MASTER_PORT=""
+DATA_DIR_OVERRIDE=""
+RUNS_ROOT_OVERRIDE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --experiment) EXP_NAME="${2:?missing value for --experiment}"; shift 2 ;;
+    --gpu-ids) GPU_SPEC_RAW="${2:?missing value for --gpu-ids}"; shift 2 ;;
+    --run-id) RUN_ID="${2:?missing value for --run-id}"; shift 2 ;;
+    --epochs) EPOCHS="${2:?missing value for --epochs}"; shift 2 ;;
+    --batch-size) BATCH_SIZE="${2:?missing value for --batch-size}"; shift 2 ;;
+    --master-port) MASTER_PORT="${2:?missing value for --master-port}"; shift 2 ;;
+    --data-dir) DATA_DIR_OVERRIDE="${2:?missing value for --data-dir}"; shift 2 ;;
+    --output-root) RUNS_ROOT_OVERRIDE="${2:?missing value for --output-root}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "[error] unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+[[ -n "$EXP_NAME" ]] || { echo "[error] --experiment is required" >&2; usage >&2; exit 2; }
+[[ -n "$GPU_SPEC_RAW" ]] || { echo "[error] --gpu-ids is required" >&2; usage >&2; exit 2; }
+RUN_ID="${RUN_ID:-train_${EXP_NAME}_$(date +%Y%m%d_%H%M%S)}"
 GPU_SPEC="${GPU_SPEC_RAW// /}"
 
-IFS=',' read -r -a GPU_ARR <<< "$GPU_SPEC"
-WORLD_SIZE="${#GPU_ARR[@]}"
-if [[ "$WORLD_SIZE" -lt 1 ]]; then
-  echo "[error] invalid gpu_ids: $GPU_SPEC_RAW"
-  exit 2
-fi
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PUBLISH_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-TRAIN_ROOT="$PUBLISH_ROOT/2-training"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+TRAIN_ROOT="$PROJECT_ROOT/2-training"
 CORE_DIR="$TRAIN_ROOT/core"
-CONDA_SH="/home/weicai/anaconda3/etc/profile.d/conda.sh"
-DATA_DIR="${TAD_DATA_DIR:-$PUBLISH_ROOT/0-data/1_dp_train_infer_data}"
-SAM3_DIR="${SAM3_PATH:-$TRAIN_ROOT/sam3}"
-RUNS_ROOT="${RUNS_ROOT:-$TRAIN_ROOT/step1_train/outputs/${EXP_NAME}_$(date +%Y%m%d_%H%M%S)}"
-
+DATA_DIR="${DATA_DIR_OVERRIDE:-${TAD_DATA_DIR:-$PROJECT_ROOT/0-data/1_dp_train_infer_data}}"
+RUNS_ROOT="${RUNS_ROOT_OVERRIDE:-${RUNS_ROOT:-$TRAIN_ROOT/step1_train/outputs}}"
 RUN_DIR="$RUNS_ROOT/$RUN_ID"
 OUT_DIR="$RUN_DIR/train_outputs"
 LOG_DIR="$RUN_DIR/logs"
-mkdir -p "$OUT_DIR" "$LOG_DIR"
+MIXED_PRECISION="${MIXED_PRECISION:-bf16}"
+GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-1}"
 
-source "$CONDA_SH"
-conda activate 3dgenome
+if [[ ! -f "$DATA_DIR/window_list.json" ]]; then
+  echo "[error] missing training data: $DATA_DIR/window_list.json" >&2
+  exit 2
+fi
+
+IFS=',' read -r -a GPU_ARRAY <<< "$GPU_SPEC"
+NPROC="${#GPU_ARRAY[@]}"
+if [[ "$NPROC" -lt 1 ]]; then
+  echo "[error] invalid gpu_ids: $GPU_SPEC_RAW" >&2
+  exit 2
+fi
 
 EXTRA_ARGS=()
-METHOD="text_oe"
 case "$EXP_NAME" in
   base)
     ;;
-  no_tofe)
-    EXTRA_ARGS+=(--disable_tofe)
-    ;;
-  no_text)
-    EXTRA_ARGS+=(--disable_text_branch)
+  obs_input)
+    EXTRA_ARGS+=(--use_obs)
     ;;
   no_pairloss)
     EXTRA_ARGS+=(--pair_weight 0.0)
@@ -67,100 +87,80 @@ case "$EXP_NAME" in
   no_count)
     EXTRA_ARGS+=(--count_weight 0.0)
     ;;
-  obs_input)
-    METHOD="text_obs"
+  boundary_count)
+    EXTRA_ARGS+=(--pair_weight 0.0 --boundary_weight 1.0)
     ;;
   *)
-    echo "[error] unsupported exp_name: $EXP_NAME"
+    echo "[error] unsupported experiment: $EXP_NAME" >&2
     exit 2
     ;;
 esac
 
+mkdir -p "$OUT_DIR" "$LOG_DIR"
+
+LAUNCH_ARGS=(--num_processes "$NPROC" --mixed_precision "$MIXED_PRECISION")
+if [[ "$NPROC" -gt 1 ]]; then
+  LAUNCH_ARGS+=(--multi_gpu)
+  if [[ -n "$MASTER_PORT" ]]; then
+    LAUNCH_ARGS+=(--main_process_port "$MASTER_PORT")
+  fi
+fi
+
 TRAIN_ARGS=(
-  --method "$METHOD"
+  --data_dir "$DATA_DIR"
+  --output_dir "$OUT_DIR"
   --epochs "$EPOCHS"
-  --stop_after_epoch "$STOP_AFTER_EPOCH"
   --batch_size "$BATCH_SIZE"
-  --lr 3e-4
-  --lora_r 16
-  --seed 42
-  --pair_weight 2.6
-  --count_weight 0.3
-  --pair_hard_window 10
-  --tofe_mix 1.0
+  --grad_accum_steps "$GRAD_ACCUM_STEPS"
+  --mixed_precision "$MIXED_PRECISION"
+  --lr 2e-4
+  --init_lr 1e-8
+  --min_lr 1e-8
+  --weight_decay 0.05
+  --warmup_epochs 1.0
+  --hidden 128
+  --diag_radius 50
+  --seed 66
   --train_sampling random_single
   --val_sampling random_single
+  --pair_weight 2.5
+  --count_weight 0.3
+  --boundary_weight 0.0
+  --pair_hard_window 8
+  --max_grad_norm 1.0
+  --num_workers 4
   --save_every_epoch
-  --output_dir "$OUT_DIR"
 )
-
 TRAIN_ARGS+=("${EXTRA_ARGS[@]}")
 
-if [[ -n "$INIT_CKPT" && "$INIT_CKPT" != "none" ]]; then
-  TRAIN_ARGS+=(--init_ckpt "$INIT_CKPT")
-fi
-
-USER_EXTRA_ARGS_STR="${EXTRA_TRAIN_ARGS:-}"
-if [[ -n "$USER_EXTRA_ARGS_STR" ]]; then
+if [[ -n "${EXTRA_TRAIN_ARGS:-}" ]]; then
   # shellcheck disable=SC2206
-  USER_EXTRA_ARGS=($USER_EXTRA_ARGS_STR)
-  TRAIN_ARGS+=("${USER_EXTRA_ARGS[@]}")
+  USER_ARGS=(${EXTRA_TRAIN_ARGS})
+  TRAIN_ARGS+=("${USER_ARGS[@]}")
 fi
 
-if [[ "$WORLD_SIZE" -gt 1 ]]; then
-  if [[ -z "$MASTER_PORT" ]]; then
-    MASTER_PORT="$((20000 + RANDOM % 20000))"
-  fi
-  CMD=(
-    accelerate launch
-    --num_processes "$WORLD_SIZE"
-    --mixed_precision fp16
-    --main_process_port "$MASTER_PORT"
-    "$CORE_DIR/train.py"
-    "${TRAIN_ARGS[@]}"
-  )
-else
-  CMD=(
-    python "$CORE_DIR/train.py"
-    "${TRAIN_ARGS[@]}"
-  )
-fi
-
+CMD=(accelerate launch "${LAUNCH_ARGS[@]}" "$CORE_DIR/train.py" "${TRAIN_ARGS[@]}")
 {
   echo "#!/usr/bin/env bash"
   echo "set -euo pipefail"
-  printf "CUDA_VISIBLE_DEVICES=%q TAD_DATA_DIR=%q SAM3_PATH=%q " \
-    "$GPU_SPEC" "$DATA_DIR" "$SAM3_DIR"
+  printf "CUDA_VISIBLE_DEVICES=%q " "$GPU_SPEC"
   printf "%q " "${CMD[@]}"
   echo
 } > "$RUN_DIR/run_command.sh"
 chmod +x "$RUN_DIR/run_command.sh"
 
 {
-  echo "[info] exp_name=$EXP_NAME"
-  echo "[info] method=$METHOD"
+  echo "[info] experiment=$EXP_NAME"
   echo "[info] run_id=$RUN_ID"
   echo "[info] gpu_ids=$GPU_SPEC"
-  echo "[info] world_size=$WORLD_SIZE"
-  if [[ "$WORLD_SIZE" -gt 1 ]]; then
-    echo "[info] ddp=on master_port=$MASTER_PORT"
-  else
-    echo "[info] ddp=off"
-  fi
   echo "[info] epochs=$EPOCHS batch_size=$BATCH_SIZE"
-  echo "[info] stop_after_epoch=$STOP_AFTER_EPOCH"
-  echo "[info] init_ckpt=$INIT_CKPT"
-  echo "[info] out_dir=$OUT_DIR"
+  echo "[info] mixed_precision=$MIXED_PRECISION grad_accum_steps=$GRAD_ACCUM_STEPS"
+  echo "[info] data_dir=$DATA_DIR"
+  echo "[info] output_dir=$OUT_DIR"
   echo "[info] extra_args=${EXTRA_ARGS[*]:-(none)}"
-  echo "[info] extra_train_args=${USER_EXTRA_ARGS_STR:-(none)}"
 } | tee "$LOG_DIR/meta.log"
 
-CUDA_VISIBLE_DEVICES="$GPU_SPEC" \
-TAD_DATA_DIR="$DATA_DIR" \
-SAM3_PATH="$SAM3_DIR" \
-"${CMD[@]}" \
-  > "$LOG_DIR/train.log" 2>&1
+CUDA_VISIBLE_DEVICES="$GPU_SPEC" "${CMD[@]}" 2>&1 | tee "$LOG_DIR/train.log"
 
-echo "[done] training finished: $RUN_DIR"
-echo "[done] best model: $OUT_DIR/best_model.pt"
-echo "[done] final model: $OUT_DIR/final_model.pt"
+echo "[done] $RUN_DIR"
+echo "[done] best checkpoint: $OUT_DIR/best_model.pt"

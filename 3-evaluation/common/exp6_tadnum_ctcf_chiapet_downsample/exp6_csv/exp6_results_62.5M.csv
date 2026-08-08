@@ -1,0 +1,17 @@
+cov,tool,CTCF supported level 0 TAD,CTCF supported level 1+ TAD,unsupported level 0 TAD,unsupported level 1+ TAD
+62.5M,Armatus,139,198,1129,1366
+62.5M,Arrowhead,0,0,0,0
+62.5M,CaTCH,31,13,470,591
+62.5M,Domaincall,3,0,920,0
+62.5M,EAST,99,0,1928,0
+62.5M,Grinch,9,2,524,298
+62.5M,HiCSeg,78,0,1136,0
+62.5M,IC-Finder,146,0,1609,0
+62.5M,OnTAD,215,178,2461,1230
+62.5M,GMAP,97,13,814,180
+62.5M,TopDom,286,0,2085,0
+62.5M,RefHiC,264,98,224,283
+62.5M,deDoc,131,0,1344,4
+62.5M,HiTAD,8,0,176,0
+62.5M,ContextTAD,281,230,205,688
+62.5M,RobusTAD,187,97,216,146

@@ -1,0 +1,11 @@
+ContextTAD Figure 6 summary
+Total final 4000M TADs: 3147
+
+Quartile statistics:
+Q1	n=787	score_min=0.018219	score_max=0.192539	contrast_median=0.024701	pileup_n=742	insulation_n=756
+Q2	n=787	score_min=0.192669	score_max=0.336690	contrast_median=0.087898	pileup_n=746	insulation_n=751
+Q3	n=787	score_min=0.337155	score_max=0.559081	contrast_median=0.117940	pileup_n=732	insulation_n=737
+Q4	n=786	score_min=0.559223	score_max=0.989257	contrast_median=0.190876	pileup_n=747	insulation_n=743
+
+Spearman pair_score vs structural_contrast: rho=0.281293, p=1.336988e-57
+Length-adjusted rank association: rho=0.283049, p=2.497347e-58

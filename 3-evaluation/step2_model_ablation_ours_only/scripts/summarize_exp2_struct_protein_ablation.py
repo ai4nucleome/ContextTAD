@@ -9,10 +9,10 @@ import pandas as pd
 PROTEINS = ["CTCF", "RAD21", "SMC3"]
 DISPLAY_NAME = {
     "base": "Base",
-    "no_tofe": "No TOFE",
-    "no_text": "No Text",
-    "no_pairloss": "No PairLoss",
-    "obs_input": "Obs Input",
+    "obs_input": "Observed Matrix Input",
+    "no_pairloss": "No Pair Loss",
+    "no_count": "No Count Loss",
+    "boundary_count": "Boundary + Count Loss",
 }
 
 

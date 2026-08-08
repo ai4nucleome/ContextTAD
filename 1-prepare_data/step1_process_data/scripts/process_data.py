@@ -305,9 +305,10 @@ def processcoolfile(coolfile, cchrom):
     return obsMat, oeMat, N
 
 def main():
+    project_root = Path(__file__).resolve().parents[3]
     default_coolpath = os.environ.get(
         "COOLPATH",
-        "/home/weicai/projectnvme/TADAnno_final/0-data/2_eval_tads_data/mcool_data/GM12878/Rao2014/4DNFIXP4QG5B_Rao2014_GM12878_frac1.mcool::/resolutions/5000",
+        str(project_root / "0-data" / "2_eval_tads_data" / "mcool_data" / "GM12878" / "Rao2014" / "4DNFIXP4QG5B_Rao2014_GM12878_frac1.mcool") + "::/resolutions/5000",
     )
     default_savedir = os.environ.get(
         "SAVEDIR",
@@ -316,7 +317,7 @@ def main():
     anno_root = Path(
         os.environ.get(
             "PREPROCESS_EIGEN_ROOT",
-            "/home/weicai/projectnvme/TADAnno_final/0-data/1_dp_train_infer_data/annotations",
+            str(project_root / "0-data" / "1_dp_train_infer_data" / "annotations"),
         )
     )
     #  argparse 

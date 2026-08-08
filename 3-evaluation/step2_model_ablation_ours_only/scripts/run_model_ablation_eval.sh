@@ -1,21 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Evaluate one model's GM12878 BEDs (ours only) via exp1/3/4/6.
-# Usage:
-#   bash run_model_ablation_eval.sh <gm12878_beds_dir> [run_id]
-
-GM_BEDS_DIR="${1:?Usage: $0 <gm12878_beds_dir> [run_id]}"
-RUN_ID="${2:-model_ablation_eval_$(date +%Y%m%d_%H%M%S)}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STEP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_ROOT="$(cd "$STEP_DIR/../.." && pwd)"
-EXPS_ROOT="${EXPS_ROOT:-$PROJECT_ROOT/3-evaluation/common}"
-EVAL_DATA_ROOT="${EVAL_DATA_ROOT:-$PROJECT_ROOT/0-data/2_eval_tads_data}"
-TOOLS_ROOT="${TOOLS_ROOT:-$EVAL_DATA_ROOT/tools_output}"
 
-RUN_DIR="$STEP_DIR/outputs/$RUN_ID"
+usage() {
+  cat <<'EOF'
+Usage:
+  bash run_model_ablation_eval.sh --gm12878-beds PATH [options]
+
+Options:
+  --gm12878-beds PATH  Directory containing the seven GM12878 BED files (required)
+  --run-id ID          Evaluation run ID (default: model_ablation_eval_<timestamp>)
+  --eval-data-root PATH
+  --tools-root PATH
+  --exps-root PATH
+  --output-root PATH
+  -h, --help           Show this help message
+EOF
+}
+
+GM_BEDS_DIR=""
+RUN_ID=""
+EVAL_DATA_ROOT_OVERRIDE=""
+TOOLS_ROOT_OVERRIDE=""
+EXPS_ROOT_OVERRIDE=""
+OUTPUT_ROOT_OVERRIDE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --gm12878-beds) GM_BEDS_DIR="${2:?missing value for --gm12878-beds}"; shift 2 ;;
+    --run-id) RUN_ID="${2:?missing value for --run-id}"; shift 2 ;;
+    --eval-data-root) EVAL_DATA_ROOT_OVERRIDE="${2:?missing value for --eval-data-root}"; shift 2 ;;
+    --tools-root) TOOLS_ROOT_OVERRIDE="${2:?missing value for --tools-root}"; shift 2 ;;
+    --exps-root) EXPS_ROOT_OVERRIDE="${2:?missing value for --exps-root}"; shift 2 ;;
+    --output-root) OUTPUT_ROOT_OVERRIDE="${2:?missing value for --output-root}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "[error] unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+[[ -n "$GM_BEDS_DIR" ]] || { echo "[error] --gm12878-beds is required" >&2; usage >&2; exit 2; }
+RUN_ID="${RUN_ID:-model_ablation_eval_$(date +%Y%m%d_%H%M%S)}"
+EXPS_ROOT="${EXPS_ROOT_OVERRIDE:-${EXPS_ROOT:-$PROJECT_ROOT/3-evaluation/common}}"
+EVAL_DATA_ROOT="${EVAL_DATA_ROOT_OVERRIDE:-${EVAL_DATA_ROOT:-$PROJECT_ROOT/0-data/2_eval_tads_data}}"
+TOOLS_ROOT="${TOOLS_ROOT_OVERRIDE:-${TOOLS_ROOT:-$EVAL_DATA_ROOT/tools_output}}"
+
+OUTPUT_ROOT="${OUTPUT_ROOT_OVERRIDE:-$STEP_DIR/outputs}"
+RUN_DIR="$OUTPUT_ROOT/$RUN_ID"
 LOG_DIR="$RUN_DIR/logs"
 CSV_DIR="$RUN_DIR/csv"
 BAK_DIR="$RUN_DIR/backup_beds"
@@ -27,6 +60,8 @@ backup_file_if_exists() {
     local rel="${src#$TOOLS_ROOT/}"
     mkdir -p "$BAK_DIR/$(dirname "$rel")"
     cp "$src" "$BAK_DIR/$rel"
+  else
+    echo "${src#$TOOLS_ROOT/}" >> "$BAK_DIR/.created_files"
   fi
 }
 
@@ -39,7 +74,12 @@ restore_backups() {
     local dst="$TOOLS_ROOT/$rel"
     mkdir -p "$(dirname "$dst")"
     cp "$f" "$dst"
-  done < <(find "$BAK_DIR" -type f | sort)
+  done < <(find "$BAK_DIR" -type f ! -name '.created_files' | sort)
+  if [[ -f "$BAK_DIR/.created_files" ]]; then
+    while IFS= read -r rel; do
+      [[ -n "$rel" ]] && rm -f "$TOOLS_ROOT/$rel"
+    done < "$BAK_DIR/.created_files"
+  fi
 }
 trap restore_backups EXIT
 

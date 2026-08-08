@@ -13,7 +13,10 @@ import numpy as np
 from pathlib import Path
 from collections import defaultdict
 
-DATA_DIR = Path(os.environ.get("TAD_DATA_DIR", "/home/weicai/projectnvme/TADAnno_final/0-data/1_dp_train_infer_data"))
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DATA_DIR = Path(
+    os.environ.get("TAD_DATA_DIR", str(PROJECT_ROOT / "0-data" / "1_dp_train_infer_data"))
+)
 RESOLUTION = 5000
 TEST_CHROMS = ["chr15", "chr16", "chr17"]
 # TEST_CHROMS = ["chr1", "chr2", "chr3", "chr4", "chr5", "chr6",

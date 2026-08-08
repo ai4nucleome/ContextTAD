@@ -136,9 +136,9 @@ def plot_pileup(txt_file, output_file=None, title=None):
     return fig, ax
 
 
-def plot_all_tools(data_dir="data", output_file="fig3_15toolsPU.pdf"):
+def plot_all_tools(data_dir="data", output_file="contexttad_coolpup_comparison.pdf"):
     """
-    Plot pileups for all 15 tools in a 3x5 grid
+    Plot pileups for ContextTAD and all benchmark tools in a 4x4 grid.
     
     Parameters
     ----------
@@ -150,6 +150,7 @@ def plot_all_tools(data_dir="data", output_file="fig3_15toolsPU.pdf"):
     # Tool configuration matching fig3.ipynb
     # Format: (display_name, tool_dir_name, bed_pattern_for_matching)
     tools_config = [
+        ('ContextTAD', 'ContextTAD', 'contexttad'),
         ('RobusTAD', 'RobusTAD', 'LMCC_TAD_ratio1_delta0.2_hq'),
         ('Arrowhead', 'Arrowhead', 'Arrowhead'),
         ('EAST', 'EAST', 'EAST2'),
@@ -213,8 +214,7 @@ def plot_all_tools(data_dir="data", output_file="fig3_15toolsPU.pdf"):
     
     print(f"Found {len(txt_files)} tool pileup files")
     
-    # Create 3x5 subplot grid
-    fig, axs = plt.subplots(3, 5, figsize=(20, 12))
+    fig, axs = plt.subplots(4, 4, figsize=(16, 16))
     
     # Setup colormap
     cmap_emptypixel = (0.98, 0.98, 0.98)
@@ -226,8 +226,8 @@ def plot_all_tools(data_dir="data", output_file="fig3_15toolsPU.pdf"):
     
     # Plot each tool
     for i, (txt_file, name) in enumerate(zip(txt_files, tool_names)):
-        row = i // 5
-        col = i % 5
+        row = i // 4
+        col = i % 4
         
         axs[row, col].clear()
         scaledPU = np.loadtxt(txt_file)
@@ -252,7 +252,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--all":
         # Plot all tools
         data_dir = sys.argv[2] if len(sys.argv) > 2 else "data"
-        output_file = sys.argv[3] if len(sys.argv) > 3 else "fig3_15toolsPU.pdf"
+        output_file = sys.argv[3] if len(sys.argv) > 3 else "contexttad_coolpup_comparison.pdf"
         plot_all_tools(data_dir, output_file)
     elif len(sys.argv) < 2:
         print(f"Usage:")

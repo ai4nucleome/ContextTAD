@@ -1,149 +1,130 @@
-# 0-data
+# ContextTAD data layout
 
-This folder is the expected data root.
+This directory is the default data root used by training, inference, and evaluation scripts.
 
-Most scripts in this repo assume:
-- `TAD_DATA_DIR=$PROJECT_ROOT/0-data/1_dp_train_infer_data`
-- `EVAL_DATA_ROOT=$PROJECT_ROOT/0-data/2_eval_tads_data`
+The full processed dataset is not committed to Git because of its size. Most processed resources are available from [Zenodo](https://doi.org/10.5281/zenodo.19062598); raw `.mcool` files must be obtained from the 4DN Data Portal and processed locally.
 
-If you store data elsewhere, set environment variables explicitly before running scripts.
-
----
-
-## 1 Required datasets
-
-You need **two data trees**:
-
-1. `1_dp_train_infer_data` (for training + inference)
-2. `2_eval_tads_data` (for eval_tads experiments)
-
-Expected layout:
+## Required directories
 
 ```text
 0-data/
- 1_dp_train_infer_data/
-    window_list.json
-    labels/
-       chr*/
-           <window>_labels.npy
-           <window>_tads.npy
-    4000M/2000M/1000M/500M/250M/125M/62_5M/
-       chr*/<window>.npy
-    other_celltypes/          # optional, for exp16/18
-        K562/
-        IMR90/
-
- 2_eval_tads_data/
-     tools_output/
-        4000M/2000M/.../62_5M/
-        other_celltypes/
-     ctcf_chiapet/
-     ctcf_chipseq/
-     mcool_data/
+├── 1_dp_train_infer_data/
+│   ├── window_list.json
+│   ├── labels/
+│   │   └── chr*/
+│   │       ├── <window>_labels.npy
+│   │       └── <window>_tads.npy
+│   ├── 4000M/chr*/<window>.npy
+│   ├── 2000M/chr*/<window>.npy
+│   ├── 1000M/chr*/<window>.npy
+│   ├── 500M/chr*/<window>.npy
+│   ├── 250M/chr*/<window>.npy
+│   ├── 125M/chr*/<window>.npy
+│   ├── 62_5M/chr*/<window>.npy
+│   └── other_celltypes/           # Optional: K562 and IMR90
+└── 2_eval_tads_data/
+    ├── tools_output/
+    ├── ctcf_chiapet/
+    ├── ctcf_chipseq/
+    ├── mcool_data/
+    ├── TAD-benchmarking-scripts/Example_Data/
+    │   ├── ENCFF039JOT_H3K27me3_chr15-17_hg38.bedGraph
+    │   ├── ENCFF171MDW_H3K36me3_chr15-17_hg38.bedGraph
+    │   ├── ENCFF232FCT_CTCF.bigWig
+    │   ├── ENCFF039JOT.bigWig
+    │   └── ENCFF171MDW.bigWig
+    └── additional experiment-specific assets
 ```
 
-Notes:
-- For this project, each `1_dp_train_infer_data/<cov>/<chr>/<window>.npy` contains two channels (obs and O/E). O/E is used for main experiments, and obs is used for ablation.
-- Training/inference scripts read `window_list.json` for split and window IDs.
-- `tools_output` in `2_eval_tads_data` is used by evaluation scripts to compare tools, and to temporarily replace `ContextTAD` during our model evaluation.
+## Training array format
 
----
+Each matrix file contains a two-channel NumPy array:
 
-## 2 Prepare data in your own environment
-
-This repository does not ship prebuilt data bundles because the full dataset is too large to distribute directly.
-Please prepare data locally by running the preprocessing pipeline in Section 3, or by linking your own existing data trees.
-
-If you already have prepared datasets in another location, copy or symlink them:
-
-```bash
-# example
-ln -s /path/to/ready/1_dp_train_infer_data 0-data/1_dp_train_infer_data
-ln -s /path/to/ready/2_eval_tads_data      0-data/2_eval_tads_data
+```text
+channel 0: observed contact matrix
+channel 1: O/E contact matrix
+shape:     [2, 400, 400]
 ```
 
-This is only a directory wiring example; data content must be prepared by the user.
+The base model reads channel 1. Channel 0 is retained for the observed-matrix ablation.
 
----
+Each `*_tads.npy` file stores TAD endpoints as closed bin intervals `[left, right]`. Invalid padding rows have a negative left endpoint. Both training heads are supervised at their stored endpoint bins without subtracting one from the right endpoint.
 
-## 3 Build from raw inputs (scripted path)
+`window_list.json` defines the train, validation, and test windows. The released split uses chromosomes 15, 16, and 17 as the held-out test set.
 
-Use scripts under `1-prepare_data/`.
+## Using data outside the repository
 
-### 3.1 Build training/inference arrays
-
-Main entry:
-- `1-prepare_data/step2_prepare_labels/scripts/prepare_data.py`
-
-Example:
+Set these variables before running the scripts:
 
 ```bash
-export TAD_DATA_DIR=/path/to/project/0-data/1_dp_train_infer_data
-export MCOOL_TEMPLATE="/path/to/mcool/4DNFIXP4QG5B_Rao2014_GM12878_frac{frac}.mcool"
+export TAD_DATA_DIR=/path/to/1_dp_train_infer_data
+export EVAL_DATA_ROOT=/path/to/2_eval_tads_data
+```
 
+Alternatively, create local symbolic links:
+
+```bash
+ln -s /path/to/1_dp_train_infer_data 0-data/1_dp_train_infer_data
+ln -s /path/to/2_eval_tads_data 0-data/2_eval_tads_data
+```
+
+## Data preparation
+
+The preprocessing code is organized under `1-prepare_data/`:
+
+```text
+step1_process_data/     raw Hi-C and genomic-track processing
+step2_prepare_labels/   window construction and DP-refined labels
+step3_build_gt/         merged ground-truth BED utilities
+```
+
+The main array-construction entry point is:
+
+```bash
 python 1-prepare_data/step2_prepare_labels/scripts/prepare_data.py
 ```
 
-Optional modes:
-- `--only-4000M` (process only 4000M)
-- `--skip-4000M` (process only low coverages)
-
-### 3.2 Build other-celltype inference data (optional)
-
-Use:
-- `1-prepare_data/step1_process_data/scripts/prepare_othercell_inference_data.py`
-
-Output should be written under:
-- `0-data/1_dp_train_infer_data/other_celltypes/{K562,IMR90}`
-
-### 3.3 Build GT BED from labels (optional utility)
-
-Use:
-- `1-prepare_data/step3_build_gt/scripts/build_ground_truth.py` (test chromosomes)
-- `1-prepare_data/step3_build_gt/scripts/build_ground_truth_all.py` (whole genome)
-
----
-
-## 4 Minimal data checks before running training
-
-Run these checks from project root:
+Build other-cell inference arrays with:
 
 ```bash
-test -f 0-data/1_dp_train_infer_data/window_list.json
-test -d 0-data/1_dp_train_infer_data/labels
-test -d 0-data/1_dp_train_infer_data/4000M
-test -d 0-data/2_eval_tads_data/tools_output
+python 1-prepare_data/step1_process_data/scripts/prepare_othercell_inference_data.py \
+  --mcool /path/to/cell_line.mcool::/resolutions/5000 \
+  --out_data_dir /path/to/1_dp_train_infer_data/other_celltypes/K562 \
+  --coverage_tag K562
 ```
 
-Optional quick sanity check:
+## Required source datasets
+
+| Category | Cell line | Accession |
+|---|---|---|
+| Hi-C | GM12878 | `4DNFIXP4QG5B` |
+| Hi-C | K562 | `4DNFI4DGNY7J` |
+| Hi-C | IMR90 | `4DNFIJTOIGOI` |
+| CTCF ChIP-seq | GM12878 | `ENCFF796WRU` |
+| CTCF signal bigWig | GM12878 | `ENCFF232FCT` |
+| CTCF ChIP-seq | K562 | `ENCFF901CBP` |
+| CTCF ChIP-seq | IMR90 | `ENCFF203SRF` |
+| CTCF ChIA-PET | GM12878 | `GSE72816` |
+| CTCF ChIA-PET | K562 | `ENCFF001THV` |
+| CTCF ChIA-PET | IMR90 | `ENCFF682YFU` |
+| H3K27me3 ChIP-seq | GM12878 | `ENCFF039JOT` |
+| H3K36me3 ChIP-seq | GM12878 | `ENCFF171MDW` |
+
+## Sanity checks
 
 ```bash
-python - <<'PY'
-import json, pathlib
-p = pathlib.Path('0-data/1_dp_train_infer_data/window_list.json')
-with open(p) as f:
-    wl = json.load(f)
-print({k: len(v) for k, v in wl['windows'].items()})
-PY
+test -f "$TAD_DATA_DIR/window_list.json"
+test -d "$TAD_DATA_DIR/labels"
+test -d "$TAD_DATA_DIR/4000M"
+test -d "$EVAL_DATA_ROOT/tools_output"
 ```
 
----
+The CSV and pileup files under `contexttad_eval_results/` are compact copies
+of the released benchmark summaries and do not replace the complete evaluation
+data tree. Detailed requirements for every benchmark are documented under
+`3-evaluation/common/<experiment>/DATA_REQUIREMENTS.md`.
 
-## 5 Environment variables used by pipeline scripts
-
-- `TAD_DATA_DIR`: training/inference data root (`.../0-data/1_dp_train_infer_data`)
-- `SAM3_PATH`: local SAM3 model directory
-- `EVAL_DATA_ROOT`: evaluation data root (`.../0-data/2_eval_tads_data`)
-- `TOOLS_ROOT` (optional): tool BED root for eval scripts (defaults to `$EVAL_DATA_ROOT/tools_output`)
-
----
-
-## 6 First end-to-end smoke run
-
-After data is ready, this one command runs train + infer + exp1/7/8/14:
-
-```bash
-bash 2-training/step1_train/scripts/run_temp_base_train_infer_eval.sh <gpu_train> [gpu_infer] [run_tag] [batch_size]
-```
-
-If this passes, your data wiring is correct.
+Figure 6 additionally requires the GM12878 4000M final BED and scored raw BED
+from the same ContextTAD inference run. These model outputs are generated under
+`2-training/step2_infer_decode/outputs/<run_id>/{beds,raw_preds}` rather than
+stored in the evaluation-data tree.

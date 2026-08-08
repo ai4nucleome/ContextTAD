@@ -8,10 +8,11 @@ import numpy as np
 from pathlib import Path
 
 def update_eigenvector():
+    project_root = Path(__file__).resolve().parents[3]
     original_file = Path(
         os.environ.get(
             "EIGEN_ORIGINAL_FILE",
-            "/home/weicai/projectnvme/TADAnno_final/0-data/1_dp_train_infer_data/annotations/gm12878_eigenvector.fillnan.tsv",
+            str(project_root / "0-data" / "1_dp_train_infer_data" / "annotations" / "gm12878_eigenvector.fillnan.tsv"),
         )
     )
     eigen_file = Path(
@@ -23,7 +24,7 @@ def update_eigenvector():
     output_dir = Path(
         os.environ.get(
             "EIGEN_OUTPUT_DIR",
-            "/home/weicai/projectnvme/TADAnno_final/0-data/1_dp_train_infer_data/annotations",
+            str(project_root / "0-data" / "1_dp_train_infer_data" / "annotations"),
         )
     )
     output_file = output_dir / original_file.name

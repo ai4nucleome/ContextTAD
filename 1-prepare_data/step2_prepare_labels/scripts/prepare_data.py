@@ -28,10 +28,11 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 from robustadScore import Delta
 
+PROJECT_ROOT = SCRIPT_DIR.parents[2]
 
 MCOOL_TEMPLATE = os.environ.get(
     "MCOOL_TEMPLATE",
-    "/home/weicai/projectnvme/TADAnno_final/0-data/2_eval_tads_data/mcool_data/GM12878/Rao2014/4DNFIXP4QG5B_Rao2014_GM12878_frac{frac}.mcool",
+    str(PROJECT_ROOT / "0-data" / "2_eval_tads_data" / "mcool_data" / "GM12878" / "Rao2014" / "4DNFIXP4QG5B_Rao2014_GM12878_frac{frac}.mcool"),
 )
 RESOLUTION = 5000
 OBS_SIZE = 400     # Window size in bins.
@@ -51,7 +52,9 @@ COVERAGES = [
 
 CHROMS = [f"chr{i}" for i in range(1, 23)]
 
-DATA_DIR = Path(os.environ.get("TAD_DATA_DIR", "/home/weicai/projectnvme/TADAnno_final/0-data/1_dp_train_infer_data"))
+DATA_DIR = Path(
+    os.environ.get("TAD_DATA_DIR", str(PROJECT_ROOT / "0-data" / "1_dp_train_infer_data"))
+)
 ANNO_DIR = DATA_DIR / "annotations"
 LABELS_DIR = DATA_DIR / "labels"
 OE_LARGE_DIR = DATA_DIR / "oeLarge"
@@ -60,7 +63,7 @@ OE_LARGE_DIR = DATA_DIR / "oeLarge"
 EXISTING_4000M_DIR = Path(
     os.environ.get(
         "EXISTING_4000M_DIR",
-        "/home/weicai/projectnvme/TADAnno_final/1-prepare_data/step2_process_data/outputs/lwc_gm12878",
+        str(PROJECT_ROOT / "1-prepare_data" / "step1_process_data" / "outputs" / "lwc_gm12878"),
     )
 )
 

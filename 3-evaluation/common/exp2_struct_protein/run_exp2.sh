@@ -2,16 +2,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 EVAL_DATA_ROOT="${EVAL_DATA_ROOT:-$PROJECT_ROOT/0-data/2_eval_tads_data}"
 DATA_DIR="${EVAL_TOOLS_ROOT:-$EVAL_DATA_ROOT/tools_output}/250M"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/struct_protein}"
 FIG_DIR="${FIG_DIR:-$SCRIPT_DIR/exp2_csv}"
 R_SCRIPT="${R_SCRIPT:-$SCRIPT_DIR/r_scripts/StructProt_EnrichBoundaries_script.R}"
-PROTEIN_PEAKS_DIR="${PROTEIN_PEAKS_DIR:-$SCRIPT_DIR/data/protein_peaks/}"
+PROTEIN_PEAKS_DIR="${PROTEIN_PEAKS_DIR:-$EVAL_DATA_ROOT/TAD-benchmarking-scripts/Example_Data}"
 CHR_SIZES="${CHR_SIZES:-$SCRIPT_DIR/GRCh38.chrom.sizes}"
 RESOLUTION="${RESOLUTION:-5}"
 CONDA_ENV="${CONDA_ENV:-robustad}"
+RSCRIPT_BIN="${RSCRIPT_BIN:-Rscript}"
 TOOL_FILTER="${TOOL_FILTER:-}"
 CONTEXTTAD_BED_OVERRIDE="${CONTEXTTAD_BED_OVERRIDE:-}"
 CLEAN_OUTPUT="${CLEAN_OUTPUT:-1}"
@@ -143,7 +144,7 @@ for tool_name in "${TOOL_LIST[@]}"; do
   echo "[run] $tool_name"
   pushd "$work_tmp" >/dev/null
   mkdir -p "$tool_name"
-  if Rscript "$R_SCRIPT" \
+  if "$RSCRIPT_BIN" "$R_SCRIPT" \
       "$bed_path" \
       "$RESOLUTION" \
       "$tool_name" \

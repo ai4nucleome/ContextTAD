@@ -1,32 +1,56 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One-click full pipeline.
-# Default evaluation: exp1/exp3/exp4/exp6.
-# Use --all-exps to run the full suite (exp1..exp8, and exp5 via RUN_EXP10=1).
-#
-# Usage:
-#   bash run_full_pipeline.sh <gpu_train> [gpu_infer] [run_id] [batch_size] [master_port] [--all-exps]
+# One-click train, infer, decode, and evaluate workflow.
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bash run_full_pipeline.sh --train-gpus IDS [options]
+
+Options:
+  --train-gpus IDS       Comma-separated training GPU IDs, for example 0 or 0,1 (required)
+  --infer-gpu ID         GPU used for inference (default: first training GPU)
+  --run-id ID            Full-pipeline run ID (default: fullpipeline_<timestamp>)
+  --train-epochs N       Number of training epochs (default: 50)
+  --batch-size N         Batch size per training GPU process (default: 16)
+  --master-port PORT     Accelerate main-process port for multi-GPU training
+  --train-data-dir PATH  Processed training and inference arrays
+  --eval-data-root PATH  Evaluation-data root
+  --all-exps             Also infer K562/IMR90 and run exp1-exp10
+  -h, --help             Show this help message
+EOF
+}
 
 ALL_EXPS=0
-POSITIONAL=()
-for arg in "$@"; do
-  case "$arg" in
-    --all-exps)
-      ALL_EXPS=1
-      ;;
-    *)
-      POSITIONAL+=("$arg")
-      ;;
+GPU_TRAIN=""
+GPU_INFER=""
+RUN_ID=""
+BATCH_SIZE=16
+MASTER_PORT=""
+TRAIN_EPOCHS=50
+TRAIN_DATA_OVERRIDE=""
+EVAL_DATA_OVERRIDE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --train-gpus) GPU_TRAIN="${2:?missing value for --train-gpus}"; shift 2 ;;
+    --infer-gpu) GPU_INFER="${2:?missing value for --infer-gpu}"; shift 2 ;;
+    --run-id) RUN_ID="${2:?missing value for --run-id}"; shift 2 ;;
+    --train-epochs) TRAIN_EPOCHS="${2:?missing value for --train-epochs}"; shift 2 ;;
+    --batch-size) BATCH_SIZE="${2:?missing value for --batch-size}"; shift 2 ;;
+    --master-port) MASTER_PORT="${2:?missing value for --master-port}"; shift 2 ;;
+    --train-data-dir) TRAIN_DATA_OVERRIDE="${2:?missing value for --train-data-dir}"; shift 2 ;;
+    --eval-data-root) EVAL_DATA_OVERRIDE="${2:?missing value for --eval-data-root}"; shift 2 ;;
+    --all-exps) ALL_EXPS=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "[error] unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
-set -- "${POSITIONAL[@]}"
 
-GPU_TRAIN="${1:?Usage: $0 <gpu_train> [gpu_infer] [run_id] [batch_size] [master_port] [--all-exps]}"
-GPU_INFER="${2:-$GPU_TRAIN}"
-RUN_ID="${3:-fullpipeline_$(date +%Y%m%d_%H%M%S)}"
-BATCH_SIZE="${4:-2}"
-MASTER_PORT="${5:-}"
+[[ -n "$GPU_TRAIN" ]] || { echo "[error] --train-gpus is required" >&2; usage >&2; exit 2; }
+GPU_INFER="${GPU_INFER:-${GPU_TRAIN%%,*}}"
+RUN_ID="${RUN_ID:-fullpipeline_$(date +%Y%m%d_%H%M%S)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PUBLISH_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -38,10 +62,9 @@ EVAL_DEFAULT_SCRIPT="$PUBLISH_ROOT/3-evaluation/step2_model_ablation_ours_only/s
 EVAL_ALL_SCRIPT="$PUBLISH_ROOT/3-evaluation/step1_main_results_vs_tools/scripts/run_main_results.sh"
 
 DATA_ROOT="${DATA_ROOT:-$PUBLISH_ROOT/0-data}"
-TRAIN_DATA_DIR="${TAD_DATA_DIR:-$DATA_ROOT/1_dp_train_infer_data}"
-EVAL_DATA_ROOT="${EVAL_DATA_ROOT:-$DATA_ROOT/2_eval_tads_data}"
+TRAIN_DATA_DIR="${TRAIN_DATA_OVERRIDE:-${TAD_DATA_DIR:-$DATA_ROOT/1_dp_train_infer_data}}"
+EVAL_DATA_ROOT="${EVAL_DATA_OVERRIDE:-${EVAL_DATA_ROOT:-$DATA_ROOT/2_eval_tads_data}}"
 OTHERCELL_DATA_ROOT="${OTHERCELL_DATA_ROOT:-$TRAIN_DATA_DIR/other_celltypes}"
-SAM3_DIR="${SAM3_PATH:-$PUBLISH_ROOT/2-training/sam3}"
 EXPS_ROOT="${EXPS_ROOT:-$PUBLISH_ROOT/3-evaluation/common}"
 
 if [[ ! -d "$TRAIN_DATA_DIR" ]]; then
@@ -50,10 +73,6 @@ if [[ ! -d "$TRAIN_DATA_DIR" ]]; then
 fi
 if [[ ! -d "$EVAL_DATA_ROOT" ]]; then
   echo "[error] missing eval data dir: $EVAL_DATA_ROOT" >&2
-  exit 2
-fi
-if [[ ! -d "$SAM3_DIR" ]]; then
-  echo "[error] missing SAM3 dir: $SAM3_DIR" >&2
   exit 2
 fi
 if [[ ! -d "$EXPS_ROOT" ]]; then
@@ -87,20 +106,22 @@ TRAIN_RUN_ID="train_base_${RUN_ID}"
 TRAIN_RUNS_ROOT="$PUBLISH_ROOT/2-training/step1_train/outputs"
 
 echo "[stage 1/4] train base model"
-RUNS_ROOT="$TRAIN_RUNS_ROOT" \
-STOP_AFTER_EPOCH=5 \
-TAD_DATA_DIR="$TRAIN_DATA_DIR" \
-SAM3_PATH="$SAM3_DIR" \
-bash "$TRAIN_SCRIPT" \
-  "$GPU_TRAIN" \
-  "$TRAIN_RUN_ID" \
-  none \
-  10 \
-  "$BATCH_SIZE" \
-  "$MASTER_PORT"
+TRAIN_CMD=(
+  bash "$TRAIN_SCRIPT"
+  --gpu-ids "$GPU_TRAIN"
+  --run-id "$TRAIN_RUN_ID"
+  --epochs "$TRAIN_EPOCHS"
+  --batch-size "$BATCH_SIZE"
+  --data-dir "$TRAIN_DATA_DIR"
+  --output-root "$TRAIN_RUNS_ROOT"
+)
+if [[ -n "$MASTER_PORT" ]]; then
+  TRAIN_CMD+=(--master-port "$MASTER_PORT")
+fi
+"${TRAIN_CMD[@]}"
 
 TRAIN_RUN_DIR="$TRAIN_RUNS_ROOT/$TRAIN_RUN_ID"
-CKPT="$TRAIN_RUN_DIR/train_outputs/checkpoints/epoch_005.pt"
+CKPT="$TRAIN_RUN_DIR/train_outputs/best_model.pt"
 if [[ ! -f "$CKPT" ]]; then
   echo "[error] missing checkpoint: $CKPT" >&2
   exit 2
@@ -112,14 +133,11 @@ fi
 INFER_GM_RUN_ID="infer_gm12878_${RUN_ID}"
 
 echo "[stage 2/4] infer/decode GM12878"
-TAD_DATA_DIR="$TRAIN_DATA_DIR" \
-SAM3_PATH="$SAM3_DIR" \
 bash "$INFER_GM_SCRIPT" \
-  "$CKPT" \
-  "$GPU_INFER" \
-  "$INFER_GM_RUN_ID" \
-  auto \
-  default
+  --checkpoint "$CKPT" \
+  --gpu-id "$GPU_INFER" \
+  --run-id "$INFER_GM_RUN_ID" \
+  --data-dir "$TRAIN_DATA_DIR"
 
 INFER_GM_RUN_DIR="$PUBLISH_ROOT/2-training/step2_infer_decode/outputs/$INFER_GM_RUN_ID"
 GM_BEDS_DIR="$INFER_GM_RUN_DIR/beds"
@@ -136,14 +154,11 @@ INFER_OTH_RUN_DIR=""
 if [[ "$ALL_EXPS" == "1" ]]; then
   INFER_OTH_RUN_ID="infer_othercell_${RUN_ID}"
   echo "[stage 3/4] infer/decode other-cell (K562, IMR90)"
-  OTHERCELL_DATA_ROOT="$OTHERCELL_DATA_ROOT" \
-  SAM3_PATH="$SAM3_DIR" \
   bash "$INFER_OTH_SCRIPT" \
-    "$CKPT" \
-    "$GPU_INFER" \
-    "$INFER_OTH_RUN_ID" \
-    auto \
-    default
+    --checkpoint "$CKPT" \
+    --gpu-id "$GPU_INFER" \
+    --run-id "$INFER_OTH_RUN_ID" \
+    --data-root "$OTHERCELL_DATA_ROOT"
 
   INFER_OTH_RUN_DIR="$PUBLISH_ROOT/2-training/step2_infer_decode/outputs/$INFER_OTH_RUN_ID"
   OTH_BEDS_DIR="$INFER_OTH_RUN_DIR/beds"
@@ -160,24 +175,25 @@ fi
 # -----------------------------------------------------------------------------
 if [[ "$ALL_EXPS" == "1" ]]; then
   EVAL_RUN_ID="main_results_${RUN_ID}"
-  echo "[stage 4/4] evaluate full suite (exp1..exp8 + exp5)"
-  EVAL_DATA_ROOT="$EVAL_DATA_ROOT" \
-  EXPS_ROOT="$EXPS_ROOT" \
-  RUN_EXP10=1 \
+  echo "[stage 4/4] evaluate full suite (exp1-exp10)"
   bash "$EVAL_ALL_SCRIPT" \
-    "$GM_BEDS_DIR" \
-    "$OTH_BEDS_DIR" \
-    "$EVAL_RUN_ID"
+    --gm12878-beds "$GM_BEDS_DIR" \
+    --othercell-beds "$OTH_BEDS_DIR" \
+    --run-id "$EVAL_RUN_ID" \
+    --eval-data-root "$EVAL_DATA_ROOT" \
+    --exps-root "$EXPS_ROOT" \
+    --run-coolpup \
+    --run-histone
 
   EVAL_RUN_DIR="$PUBLISH_ROOT/3-evaluation/step1_main_results_vs_tools/outputs/runs/$EVAL_RUN_ID"
 else
   EVAL_RUN_ID="default_eval_${RUN_ID}"
   echo "[stage 4/4] evaluate default suite (exp1/3/4/6)"
-  EVAL_DATA_ROOT="$EVAL_DATA_ROOT" \
-  EXPS_ROOT="$EXPS_ROOT" \
   bash "$EVAL_DEFAULT_SCRIPT" \
-    "$GM_BEDS_DIR" \
-    "$EVAL_RUN_ID"
+    --gm12878-beds "$GM_BEDS_DIR" \
+    --run-id "$EVAL_RUN_ID" \
+    --eval-data-root "$EVAL_DATA_ROOT" \
+    --exps-root "$EXPS_ROOT"
 
   EVAL_RUN_DIR="$PUBLISH_ROOT/3-evaluation/step2_model_ablation_ours_only/outputs/$EVAL_RUN_ID"
 fi
@@ -232,6 +248,8 @@ if [[ "$ALL_EXPS" == "1" ]]; then
   link_path "$EXPS_ROOT/exp8_othercell_both_ctcf_chipseq/exp8_csv" "$COMMON_LINK_DIR/exp8_othercell_both_ctcf_chipseq"
   link_path "$EXPS_ROOT/exp5_coolpup/exp5_figs" "$COMMON_LINK_DIR/exp5_coolpup_figs"
   link_path "$EXPS_ROOT/exp5_coolpup/data" "$COMMON_LINK_DIR/exp5_coolpup_data"
+  link_path "$EVAL_RUN_DIR/exp9_csv" "$COMMON_LINK_DIR/exp9_tad_size"
+  link_path "$EVAL_RUN_DIR/exp10_csv" "$COMMON_LINK_DIR/exp10_histone_modification"
 fi
 
 ln -sfn "$FP_RUN_DIR" "$FP_OUT_ROOT/latest"
@@ -245,4 +263,4 @@ if [[ "$ALL_EXPS" == "1" ]]; then
   echo "othercell_infer_run=$INFER_OTH_RUN_DIR"
 fi
 echo "eval_run=$EVAL_RUN_DIR"
-echo "checkpoint_epoch005=$CKPT"
+echo "best_checkpoint=$CKPT"

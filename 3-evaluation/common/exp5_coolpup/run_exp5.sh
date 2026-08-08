@@ -6,7 +6,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$SCRIPT_DIR"
 
 EVAL_DATA_ROOT="${EVAL_DATA_ROOT:-$PROJECT_ROOT/0-data/2_eval_tads_data}"
@@ -15,6 +15,7 @@ MCOOL_FILE="${MCOOL_FILE:-$EVAL_DATA_ROOT/mcool_data/GM12878/Rao2014/4DNFIXP4QG5
 DATA_DIR="${DATA_DIR:-data}"
 
 TOOL_LIST=(
+  ContextTAD
   RobusTAD
   Arrowhead
   EAST
@@ -33,6 +34,7 @@ TOOL_LIST=(
 )
 
 declare -A TOOL_BED
+TOOL_BED[ContextTAD]="4DNFIXP4QG5B_Rao2014_GM12878_250M_5K_contexttad.bed"
 TOOL_BED[RobusTAD]="4DNFIXP4QG5B_Rao2014_GM12878_250M_5K_robustad.good.bed"
 TOOL_BED[Arrowhead]="4DNFIXP4QG5B_Rao2014_GM12878_250M_5K_Arrowhead.bed"
 TOOL_BED[EAST]="4DNFIXP4QG5B_Rao2014_GM12878_250M_5K_EAST2.bed"
@@ -145,7 +147,7 @@ echo "Stage-2: draw combined figure"
 echo "=========================================="
 FIG_DIR="$SCRIPT_DIR/exp5_figs"
 mkdir -p "$FIG_DIR"
-python plot_pileup.py --all "$DATA_DIR" "$FIG_DIR/fig3_15toolsPU.pdf"
+python plot_pileup.py --all "$DATA_DIR" "$FIG_DIR/contexttad_coolpup_comparison.pdf"
 
 echo
 echo "[done] exp5 completed"

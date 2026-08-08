@@ -60,7 +60,7 @@ def load_pileup_df(filename, quaich=False, skipstripes=False):
     if quaich:
         basename = os.path.basename(filename)
         sample, bedname = re.search(
-            "^(.*)-(?:[0-9]+)_over_(.*)_(?:[0-9]+-shifts|expected).*\.clpy", basename
+        r"^(.*)-(?:[0-9]+)_over_(.*)_(?:[0-9]+-shifts|expected).*\.clpy", basename
         ).groups()
         annotation["sample"] = sample
         annotation["bedname"] = bedname
