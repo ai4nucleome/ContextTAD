@@ -74,7 +74,7 @@ Some optional evaluation or visualization workflows additionally require:
 
 The full processed dataset is too large to keep in the Git repository. The expected layout, array format, and preprocessing inputs are documented in [`0-data/README.md`](0-data/README.md).
 
-Most processed resources are available from [Zenodo](https://doi.org/10.5281/zenodo.19062598). Raw `.mcool` files should be downloaded from the 4DN Data Portal.
+Most processed resources are available from [Zenodo](https://doi.org/10.5281/zenodo.21859307). Raw `.mcool` files should be downloaded from the 4DN Data Portal.
 
 The two required data roots are:
 
