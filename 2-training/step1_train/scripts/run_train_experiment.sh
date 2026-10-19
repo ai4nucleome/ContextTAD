@@ -14,6 +14,8 @@ Options:
   --run-id ID          Output run ID (default: train_<experiment>_<timestamp>)
   --epochs N           Number of training epochs (default: 50)
   --batch-size N       Batch size per GPU process (default: 16)
+  --count-lambda FLOAT Count-loss coefficient after normalization by window bins (default: 32)
+  --max-grad-norm FLOAT Gradient clipping threshold (default: 0.4)
   --master-port PORT   Accelerate main-process port for multi-GPU training
   --data-dir PATH      Processed training-data directory
   --output-root PATH   Parent directory for training runs
@@ -26,6 +28,8 @@ GPU_SPEC_RAW=""
 RUN_ID=""
 EPOCHS=50
 BATCH_SIZE=16
+COUNT_LAMBDA=32
+MAX_GRAD_NORM=0.4
 MASTER_PORT=""
 DATA_DIR_OVERRIDE=""
 RUNS_ROOT_OVERRIDE=""
@@ -37,6 +41,8 @@ while [[ $# -gt 0 ]]; do
     --run-id) RUN_ID="${2:?missing value for --run-id}"; shift 2 ;;
     --epochs) EPOCHS="${2:?missing value for --epochs}"; shift 2 ;;
     --batch-size) BATCH_SIZE="${2:?missing value for --batch-size}"; shift 2 ;;
+    --count-lambda) COUNT_LAMBDA="${2:?missing value for --count-lambda}"; shift 2 ;;
+    --max-grad-norm) MAX_GRAD_NORM="${2:?missing value for --max-grad-norm}"; shift 2 ;;
     --master-port) MASTER_PORT="${2:?missing value for --master-port}"; shift 2 ;;
     --data-dir) DATA_DIR_OVERRIDE="${2:?missing value for --data-dir}"; shift 2 ;;
     --output-root) RUNS_ROOT_OVERRIDE="${2:?missing value for --output-root}"; shift 2 ;;
@@ -123,11 +129,11 @@ TRAIN_ARGS=(
   --seed 66
   --train_sampling random_single
   --val_sampling random_single
-  --pair_weight 2.5
-  --count_weight 0.3
+  --pair_weight 1.0
+  --count_weight "$COUNT_LAMBDA"
   --boundary_weight 0.0
   --pair_hard_window 8
-  --max_grad_norm 1.0
+  --max_grad_norm "$MAX_GRAD_NORM"
   --num_workers 4
   --save_every_epoch
 )
