@@ -13,5 +13,5 @@ cov,tool,CTCF supported level 0 TAD,CTCF supported level 1+ TAD,unsupported leve
 62.5M,RefHiC,264,98,224,283
 62.5M,deDoc,131,0,1344,4
 62.5M,HiTAD,8,0,176,0
-62.5M,ContextTAD,281,230,205,688
+62.5M,ContextTAD,338,399,345,1226
 62.5M,RobusTAD,187,97,216,146

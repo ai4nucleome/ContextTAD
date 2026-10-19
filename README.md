@@ -14,7 +14,7 @@ The current model contains three components:
 2. A diagonal feature projection module extracts a 101-bin band around the main diagonal and maps the two-dimensional features to a genomic-bin-aligned sequence.
 3. Shared one-dimensional convolutional layers and two directional heads predict left- and right-boundary probability tracks of length 400.
 
-The model is trained with a pair objective and a count objective. At inference time, overlapping-window predictions are averaged into chromosome-level tracks. Candidate boundary peaks are selected using a diagonal-preserving target-decoy FDR procedure, paired by endpoint probability product, and refined with lightweight structural deduplication and nesting constraints.
+The model is trained with a pair objective and a count objective normalized by the number of bins per window, with count-loss weight 32 and gradient clipping at 1. At inference time, overlapping-window predictions are averaged into chromosome-level tracks. A single distance-band-shifted decoy map is inferred per window; target and decoy boundary peaks are paired by endpoint probability product, then final TADs are selected at FDR 0.05 after deduplication and nesting-aware pruning.
 
 ![ContextTAD architecture and workflow](figs/fig1.png)
 
@@ -159,7 +159,8 @@ bash 2-training/step1_train/scripts/run_train_base.sh \
   --gpu-ids 0 \
   --run-id train_base_$(date +%Y%m%d_%H%M%S) \
   --epochs 50 \
-  --batch-size 16
+  --batch-size 16 \
+  --count-lambda 32
 ```
 
 `--gpu-ids` selects the devices exposed to Accelerate; use `--gpu-ids 0,1, ...` for
@@ -201,8 +202,8 @@ bash 2-training/step2_infer_decode/scripts/run_infer_decode_gm12878.sh \
 Hugging Face. `--gpu-id` selects the inference device, and `--run-id` names the
 output directory.
 
-This stage writes chromosome-level boundary tracks, FDR-selected pair
-candidates, postprocessing statistics, and final BED files under
+This stage writes cached chromosome-level target/decoy boundary tracks,
+postprocessing statistics, and final BED files under
 `2-training/step2_infer_decode/outputs/<run_id>/`.
 
 ### Step 4: infer K562 and IMR90 TADs (optional)

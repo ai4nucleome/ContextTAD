@@ -13,8 +13,8 @@ class PairCountLoss(nn.Module):
 
     def __init__(
         self,
-        pair_weight: float = 2.5,
-        count_weight: float = 0.3,
+        pair_weight: float = 1.0,
+        count_weight: float = 32.0,
         boundary_weight: float = 0.0,
         min_len_bins: int = 5,
         pair_hard_window: int = 8,
@@ -109,7 +109,8 @@ class PairCountLoss(nn.Module):
         pred_right = right_pred.float().sum(dim=1)
         gt_left = left_count_gt.float().squeeze(-1)
         gt_right = right_count_gt.float().squeeze(-1)
-        return F.l1_loss(pred_left, gt_left) + F.l1_loss(pred_right, gt_right)
+        n_bins = left_pred.shape[-1]
+        return (F.l1_loss(pred_left, gt_left) + F.l1_loss(pred_right, gt_right)) / n_bins
 
     @staticmethod
     def boundary_loss(
