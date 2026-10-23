@@ -65,7 +65,7 @@ fi
 mkdir -p "$BEDS_DIR" "$LOG_DIR"
 
 for cov in "${COVERAGES[@]}"; do
-  CUDA_VISIBLE_DEVICES="$GPU_ID" python "$CORE_DIR/infer_decode_v32.py" \
+  CUDA_VISIBLE_DEVICES="$GPU_ID" python "$CORE_DIR/infer_decode.py" \
     --checkpoint "$CKPT" \
     --data-root "$DATA_DIR" \
     --output-dir "$RUN_DIR" \

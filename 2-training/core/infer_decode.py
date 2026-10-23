@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 import predict_structure
-import v32_decode
+import decode
 from train import normalize_matrix
 
 
@@ -45,7 +45,7 @@ def infer(args) -> None:
         "checkpoint_sha256": sha256(args.checkpoint),
         "window_list_sha256": sha256(args.data_root / "window_list.json"),
         "inference_script_sha256": sha256(Path(__file__)),
-        "decoder_script_sha256": sha256(Path(v32_decode.__file__)),
+        "decoder_script_sha256": sha256(Path(decode.__file__)),
         "decoy": "near3_far5", "seed": args.seed, "dataset": args.dataset,
         "window_count": len(windows),
     }
@@ -73,7 +73,7 @@ def infer(args) -> None:
                              mmap_mode="r")[1]
             rng = np.random.default_rng(predict_structure.stable_seed(
                 f"{args.dataset}:{chrom}:{window}", args.seed))
-            decoy = v32_decode.shift_distance_bands(matrix, rng)
+            decoy = decode.shift_distance_bands(matrix, rng)
             batch = np.stack((normalize_matrix(matrix), normalize_matrix(decoy)))
             tensor = torch.from_numpy(batch).unsqueeze(1).to(device)
             with torch.inference_mode(), torch.amp.autocast(
@@ -105,15 +105,15 @@ def calibrate(args) -> None:
     for chrom in args.chroms:
         source = args.output_dir / "cache/tracks" / args.dataset / f"{chrom}.npz"
         with np.load(source) as z:
-            target[chrom] = v32_decode.prepare(v32_decode.assemble(
+            target[chrom] = decode.prepare(decode.assemble(
                 chrom, z["left_target"], z["right_target"], args.peak_radius))
-            null[chrom] = v32_decode.prepare(v32_decode.assemble(
+            null[chrom] = decode.prepare(decode.assemble(
                 chrom, z["left_decoy"], z["right_decoy"], args.peak_radius))
         print(f"[candidates] {args.dataset} {chrom}: "
               f"{len(target[chrom].pairs)} target, {len(null[chrom].pairs)} decoy", flush=True)
     calls, decoys, details = set(), set(), []
     for chrom in args.chroms:
-        cutoff, selected, selected_null = v32_decode.calibrate(
+        cutoff, selected, selected_null = decode.calibrate(
             target[chrom], null[chrom], args.fdr_alpha)
         calls.update(selected)
         decoys.update(selected_null)
@@ -154,7 +154,7 @@ def main() -> None:
     parser.add_argument("--chroms", nargs="+", default=["chr15", "chr16", "chr17"])
     parser.add_argument("--fdr-alpha", type=float, default=0.05)
     parser.add_argument("--peak-radius", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=66)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--threads", type=int, default=2)
     args = parser.parse_args()

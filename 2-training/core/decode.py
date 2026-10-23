@@ -48,7 +48,7 @@ def assemble(chrom: str, left: np.ndarray, right: np.ndarray, peak_radius: int =
 
 
 def prune(pairs):
-    """Keep nested parents supported by a top-five pair score, as in v32."""
+    """Keep nested parents supported by a top-five pair score."""
     if not pairs:
         return []
     left = np.asarray([p[1] for p in pairs], dtype=np.int64)

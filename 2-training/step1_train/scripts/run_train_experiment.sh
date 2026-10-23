@@ -126,7 +126,7 @@ TRAIN_ARGS=(
   --warmup_epochs 1.0
   --hidden 128
   --diag_radius 50
-  --seed 66
+  --seed 42
   --train_sampling random_single
   --val_sampling random_single
   --pair_weight 1.0

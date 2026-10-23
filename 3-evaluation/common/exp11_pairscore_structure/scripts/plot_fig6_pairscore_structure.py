@@ -342,7 +342,7 @@ def load_or_compute_insulation(
     return table
 
 
-def profile_ci(values: np.ndarray, seed: int = 66, n_boot: int = 500):
+def profile_ci(values: np.ndarray, seed: int = 42, n_boot: int = 500):
     mean = np.nanmean(values, axis=0)
     rng = np.random.default_rng(seed)
     boots = np.empty((n_boot, values.shape[1]), dtype=np.float32)
@@ -415,7 +415,7 @@ def compute_insulation_profiles(
     for quartile in QUARTILES:
         select = (output["quartile"].to_numpy() == quartile) & output["insulation_profile_included"].to_numpy()
         for boundary, array in (("left", left_array), ("right", right_array)):
-            mean, low, high = profile_ci(array[select], seed=66 + QUARTILES.index(quartile))
+            mean, low, high = profile_ci(array[select], seed=42 + QUARTILES.index(quartile))
             for offset, avg, lo, hi in zip(offsets * RESOLUTION // 1000, mean, low, high):
                 rows.append(
                     {

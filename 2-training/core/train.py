@@ -149,7 +149,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--warmup_epochs", type=float, default=1.0)
     p.add_argument("--hidden", type=int, default=128)
     p.add_argument("--diag_radius", type=int, default=50, help="Near-diagonal radius in bins used by the 2D-to-1D projection")
-    p.add_argument("--seed", type=int, default=66)
+    p.add_argument("--seed", type=int, default=42)
     p.add_argument("--use_obs", action="store_true", help="Use observed matrix instead of O/E")
     p.add_argument("--train_sampling", default="random_single", choices=["random_single", "all_pairs", "fixed_single"])
     p.add_argument("--val_sampling", default="random_single", choices=["random_single", "all_pairs", "fixed_single"])

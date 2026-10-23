@@ -65,7 +65,7 @@ for cell in K562 IMR90; do
     echo "[error] inference data not found: $data_dir/window_list.json" >&2
     exit 2
   fi
-  CUDA_VISIBLE_DEVICES="$GPU_ID" python "$CORE_DIR/infer_decode_v32.py" \
+  CUDA_VISIBLE_DEVICES="$GPU_ID" python "$CORE_DIR/infer_decode.py" \
     --checkpoint "$CKPT" \
     --data-root "$data_dir" \
     --output-dir "$RUN_DIR" \
