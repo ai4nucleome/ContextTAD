@@ -14,7 +14,7 @@ The current model contains three components:
 2. A diagonal feature projection module extracts a 101-bin band around the main diagonal and maps the two-dimensional features to a genomic-bin-aligned sequence.
 3. Shared one-dimensional convolutional layers and two directional heads predict left- and right-boundary probability tracks of length 400.
 
-The model is trained with a pair objective and a count objective normalized by the number of bins per window, with count-loss weight 32 and gradient clipping at 1. At inference time, overlapping-window predictions are averaged into chromosome-level tracks. A single distance-band-shifted decoy map is inferred per window; target and decoy boundary peaks are paired by endpoint probability product, then final TADs are selected at FDR 0.05 after deduplication and nesting-aware pruning.
+The model is trained with a pair objective whose negative term has weight 0.5 and a count objective targeting boundary endpoint occurrences (including repeated endpoints), normalized by the number of bins per window. The count-loss weight is 32 and gradient clipping is 1.0. At inference time, overlapping-window predictions are averaged into chromosome-level tracks. A single distance-band-shifted decoy map is inferred per window; target and decoy boundary peaks are paired by endpoint probability product, then final TADs are selected at FDR 0.05 after deduplication and nesting-aware pruning.
 
 ![ContextTAD architecture and workflow](figs/fig1.png)
 
@@ -121,10 +121,11 @@ Build the GM12878 windows after configuring the raw Hi-C and genomic-track
 paths required by the preprocessing scripts:
 
 ```bash
+bash 1-prepare_data/step1_process_data/scripts/run_pipeline.sh --step1-only
 python 1-prepare_data/step2_prepare_labels/scripts/prepare_data.py
 ```
 
-The command will create the seven coverage directories, shared DP-refined labels,
+The first command creates the window-level DP inputs. The second recomputes the refined labels using single-TAD enumeration, frontier-state max-sum DP for small multi-TAD components, and min-fill variable elimination with backtracking for large components. It creates the seven coverage directories, shared DP-refined labels,
 and `window_list.json` under `TAD_DATA_DIR`. To process only a subset of the
 coverage levels, use one of the following mutually exclusive options:
 

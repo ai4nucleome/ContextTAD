@@ -15,7 +15,7 @@ Options:
   --epochs N           Number of training epochs (default: 50)
   --batch-size N       Batch size per GPU process (default: 16)
   --count-lambda FLOAT Count-loss coefficient after normalization by window bins (default: 32)
-  --max-grad-norm FLOAT Gradient clipping threshold (default: 0.4)
+  --max-grad-norm FLOAT Gradient clipping threshold (default: 1.0)
   --master-port PORT   Accelerate main-process port for multi-GPU training
   --data-dir PATH      Processed training-data directory
   --output-root PATH   Parent directory for training runs
@@ -29,7 +29,7 @@ RUN_ID=""
 EPOCHS=50
 BATCH_SIZE=16
 COUNT_LAMBDA=32
-MAX_GRAD_NORM=0.4
+MAX_GRAD_NORM=1.0
 MASTER_PORT=""
 DATA_DIR_OVERRIDE=""
 RUNS_ROOT_OVERRIDE=""

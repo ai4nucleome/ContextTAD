@@ -1,4 +1,0 @@
-chrom	start	end	valid_bin_fraction	prediction_span_fraction	n_tads	nested_tads	nested_fraction	shared_boundary_positions	shared_boundary_excess	shared_boundary_fraction	partial_overlap_pairs	median_tad_size	tad_size_cv	complexity_score	target_complexity	target_distance	selection_role	density_distance
-chr15	36000000	38000000	1.0	0.6975	8	5	0.625	5	7	0.4375	3	280000.0	0.6162727592473534	0.21120689655172414	0.2	0.011206896551724133	simple adjacent domains	
-chr16	48000000	50000000	1.0	0.87	17	12	0.7058823529411765	11	17	0.5	26	190000.0	0.7936155069441104	0.5102040816326531	0.5	0.010204081632653073	nested domains with a shared boundary	1.0
-chr17	49000000	51000000	1.0	0.9625	49	37	0.7551020408163265	35	62	0.6326530612244898	101	155000.0	0.48153449296967743	0.7627118644067797	0.8	0.037288135593220306	predefined complex multiscale region	

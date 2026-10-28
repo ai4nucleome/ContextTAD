@@ -2,7 +2,7 @@
 
 This directory is the default data root used by training, inference, and evaluation scripts.
 
-The full processed dataset is not committed to Git because of its size. Most processed resources are available from [Zenodo](https://doi.org/10.5281/zenodo.19062598); raw `.mcool` files must be obtained from the 4DN Data Portal and processed locally.
+The full processed dataset is not committed to Git because of its size. Most processed resources are available from [Zenodo](https://doi.org/10.5281/zenodo.21859307); raw `.mcool` files must be obtained from the 4DN Data Portal and processed locally.
 
 ## Required directories
 
@@ -49,6 +49,7 @@ shape:     [2, 400, 400]
 The base model reads channel 1. Channel 0 is retained for the observed-matrix ablation.
 
 Each `*_tads.npy` file stores TAD endpoints as closed bin intervals `[left, right]`. Invalid padding rows have a negative left endpoint. Both training heads are supervised at their stored endpoint bins without subtracting one from the right endpoint.
+Count targets sum endpoint occurrences, so multiple TADs sharing one boundary contribute multiple counts at that bin.
 
 `window_list.json` defines the train, validation, and test windows. The released split uses chromosomes 15, 16, and 17 as the held-out test set.
 
@@ -81,8 +82,11 @@ step3_build_gt/         merged ground-truth BED utilities
 The main array-construction entry point is:
 
 ```bash
+bash 1-prepare_data/step1_process_data/scripts/run_pipeline.sh --step1-only
 python 1-prepare_data/step2_prepare_labels/scripts/prepare_data.py
 ```
+
+The first command prepares the window-level inputs. The second recomputes DP-refined labels before building training arrays; it does not reuse an existing `TAD_dp.txt`. Refinement enumerates single-TAD candidates, uses frontier-state max-sum DP for small multi-TAD components, and min-fill variable elimination with backtracking for larger components.
 
 Build other-cell inference arrays with:
 
@@ -119,9 +123,7 @@ test -d "$TAD_DATA_DIR/4000M"
 test -d "$EVAL_DATA_ROOT/tools_output"
 ```
 
-The CSV and pileup files under `contexttad_eval_results/` are compact copies
-of the released benchmark summaries and do not replace the complete evaluation
-data tree. Detailed requirements for every benchmark are documented under
+Detailed requirements for every benchmark are documented under
 `3-evaluation/common/<experiment>/DATA_REQUIREMENTS.md`.
 
 Figure 6 additionally requires the GM12878 4000M final BED and scored raw BED

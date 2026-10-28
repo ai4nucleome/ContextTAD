@@ -59,16 +59,21 @@ class PairCountLoss(nn.Module):
                 left_pred[batch_idx, left_idx] * right_pred[batch_idx, right_idx]
             ).clamp(1e-6, 1.0 - 1e-6)
             positive_loss = -torch.log(positive).mean()
+            positive_pair_ids = left_idx * n_bins + right_idx
 
             negative_parts = []
             if len(left_idx) > 1:
                 shifted_right = torch.roll(right_idx, shifts=1)
-                negative_parts.append(
-                    (
-                        left_pred[batch_idx, left_idx]
-                        * right_pred[batch_idx, shifted_right]
-                    ).clamp(1e-6, 1.0 - 1e-6)
+                valid_mismatch = ~torch.isin(
+                    left_idx * n_bins + shifted_right, positive_pair_ids
                 )
+                if valid_mismatch.any():
+                    negative_parts.append(
+                        (
+                            left_pred[batch_idx, left_idx[valid_mismatch]]
+                            * right_pred[batch_idx, shifted_right[valid_mismatch]]
+                        ).clamp(1e-6, 1.0 - 1e-6)
+                    )
 
             jitter = torch.randint(
                 -self.pair_hard_window,
@@ -78,7 +83,10 @@ class PairCountLoss(nn.Module):
             )
             jitter = torch.where(jitter == 0, torch.ones_like(jitter), jitter)
             jitter_right = (right_idx + jitter).clamp(0, n_bins - 1)
-            valid_jitter = jitter_right > (left_idx + self.min_len - 1)
+            valid_jitter = (
+                (jitter_right > (left_idx + self.min_len - 1))
+                & ~torch.isin(left_idx * n_bins + jitter_right, positive_pair_ids)
+            )
             if valid_jitter.any():
                 negative_parts.append(
                     (

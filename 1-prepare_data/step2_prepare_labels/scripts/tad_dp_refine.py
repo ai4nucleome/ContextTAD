@@ -22,7 +22,7 @@ from collections import defaultdict
 import warnings
 import argparse
 import logging
-from itertools import product
+from itertools import combinations
 from numba import jit, prange
 
 warnings.filterwarnings('ignore')
@@ -1138,26 +1138,7 @@ def optimize_component(component: List[int], node_map: Dict[int, TADNode],
                        boundary_map: BoundaryMap, signals: LinearSignals,
                        oe: np.ndarray, obs_large: np.ndarray, obs: np.ndarray,
                        logger: logging.Logger) -> None:
-    """
-    TAD
-    
-    ,
-    :
-    
-    1. TAD:TAD
-    2. TAD:DP
-    3. TAD:
-    
-    :
-        component: List[int] - TAD ID
-        node_map: Dict[int, TADNode] - TAD
-        boundary_map: BoundaryMap - 
-        signals: LinearSignals - 
-        oe: np.ndarray - O/E
-        obs_large: np.ndarray - Hi-C
-        obs: np.ndarray - Hi-C
-        logger: logging.Logger - 
-    """
+    """Enumerate a singleton; use frontier DP or exact elimination for multi-TAD components."""
     # TAD:
     if len(component) == 1:
         _optimize_single_tad(component[0], node_map, boundary_map, signals, oe, obs_large, obs, logger)
@@ -1188,13 +1169,93 @@ def optimize_component(component: List[int], node_map: Dict[int, TADNode],
     logger.debug(f"  Component: {len(component)} TADs, {n_boundaries} boundaries, ~{total_combinations} combinations")
     
     if total_combinations <= MAX_COMBINATIONS:
-        # :DP
-        _optimize_component_dp(component, boundary_ids, node_map, boundary_map, 
+        _optimize_component_dp(component, boundary_ids, node_map, boundary_map,
                                signals, oe, obs_large, obs, logger)
     else:
-        logger.debug(f"    Using iterative optimization")
-        _optimize_component_iterative(component, boundary_ids, node_map, boundary_map,
-                                      signals, oe, obs_large, obs, logger)
+        _optimize_component_elimination(component, boundary_ids, node_map, boundary_map,
+                                        signals, oe, obs_large, obs, logger)
+
+
+def _optimize_component_elimination(component: List[int], boundary_ids: List[int],
+                                    node_map: Dict[int, TADNode], boundary_map: BoundaryMap,
+                                    signals: LinearSignals, oe: np.ndarray,
+                                    obs_large: np.ndarray, obs: np.ndarray,
+                                    logger: logging.Logger) -> None:
+    """Exact max-sum DP using a min-fill elimination order and backpointers."""
+    candidates = {bid: boundary_map.boundaries[bid].candidates for bid in boundary_ids}
+    graph = {bid: set() for bid in boundary_ids}
+    factors = []
+
+    # Each annotated TAD is one pairwise potential, identical to the old score.
+    for tad_id in component:
+        node = node_map[tad_id]
+        left_id, right_id = node.left_boundary_id, node.right_boundary_id
+        scope = tuple(sorted({left_id, right_id}))
+        if any(bid not in candidates for bid in scope):
+            raise ValueError(f"TAD {tad_id} references an unknown boundary")
+        if len(scope) == 2:
+            graph[scope[0]].add(scope[1])
+            graph[scope[1]].add(scope[0])
+        table = np.empty(tuple(len(candidates[bid]) for bid in scope), dtype=float)
+        for index_tuple in np.ndindex(table.shape):
+            coords = dict(zip(scope, index_tuple))
+            left = candidates[left_id][coords[left_id]]
+            right = candidates[right_id][coords[right_id]]
+            if left >= right:
+                table[index_tuple] = -np.inf
+                continue
+            value = compute_tad_score(left, right, signals, oe, obs_large, obs,
+                                      node, boundary_map)
+            table[index_tuple] = value if value != NEG_INF and np.isfinite(value) else -np.inf
+        factors.append((scope, table))
+
+    # Min-fill keeps the largest intermediate potential small on nested TAD graphs.
+    elimination_order = []
+    while graph:
+        def cost(bid):
+            neighbors = graph[bid]
+            missing = sum(other not in graph[first]
+                          for first, other in combinations(sorted(neighbors), 2))
+            return missing, len(neighbors), -bid
+
+        bid = min(graph, key=cost)
+        neighbors = graph[bid]
+        for first, other in combinations(sorted(neighbors), 2):
+            graph[first].add(other)
+            graph[other].add(first)
+        for neighbor in neighbors:
+            graph[neighbor].remove(bid)
+        del graph[bid]
+        elimination_order.append(bid)
+
+    backpointers = {}
+    for bid in elimination_order:
+        touching = [(scope, table) for scope, table in factors if bid in scope]
+        factors = [(scope, table) for scope, table in factors if bid not in scope]
+        union = tuple(sorted({item for scope, _ in touching for item in scope}))
+        shape = tuple(len(candidates[item]) for item in union)
+        joint = np.zeros(shape, dtype=float)
+        for scope, table in touching:
+            broadcast_shape = tuple(len(candidates[item]) if item in scope else 1
+                                    for item in union)
+            joint += table.reshape(broadcast_shape)
+        axis = union.index(bid)
+        remaining = tuple(item for item in union if item != bid)
+        backpointers[bid] = (remaining, np.argmax(joint, axis=axis))
+        factors.append((remaining, np.max(joint, axis=axis)))
+
+    final_score = sum(float(table) for _, table in factors)
+    if np.isfinite(final_score) and final_score > NEG_INF:
+        chosen = {}
+        for bid in reversed(elimination_order):
+            remaining, argmax = backpointers[bid]
+            key = tuple(chosen[item] for item in remaining)
+            chosen[bid] = int(argmax[key])
+        best_combination = {bid: candidates[bid][chosen[bid]] for bid in boundary_ids}
+    else:
+        best_combination = {bid: boundary_map.boundaries[bid].canonical_coord
+                            for bid in boundary_ids}
+    _apply_combination(component, boundary_ids, best_combination, node_map, boundary_map, logger)
 
 
 def _optimize_single_tad(tad_id: int, node_map: Dict[int, TADNode], boundary_map: BoundaryMap,
@@ -1248,150 +1309,73 @@ def _optimize_component_dp(component: List[int], boundary_ids: List[int],
                            signals: LinearSignals, oe: np.ndarray,
                            obs_large: np.ndarray, obs: np.ndarray, 
                            logger: logging.Logger) -> None:
-    """
-    DP
-    
-    :,
-    TAD,
-    
-    :,TAD
-    ,(),
-    
-    
-    :
-        component: List[int] - TAD ID
-        boundary_ids: List[int] - ID
-        node_map: Dict[int, TADNode] - TAD
-        boundary_map: BoundaryMap - 
-        signals: LinearSignals - 
-        oe: np.ndarray - O/E
-        obs_large: np.ndarray - Hi-C
-        obs: np.ndarray - Hi-C
-        logger: logging.Logger - 
-    """
-    # :ID
-    candidate_lists = []
-    for bid in boundary_ids:
-        candidate_lists.append(boundary_map.boundaries[bid].candidates)
-    
-    best_combination = {bid: boundary_map.boundaries[bid].canonical_coord for bid in boundary_ids}
-    best_score = NEG_INF
-    
-    # product(*candidate_lists) 
-    for combo in product(*candidate_lists):
-        # ID
-        coord_map = {bid: coord for bid, coord in zip(boundary_ids, combo)}
-        
-        # TAD
-        total_score = 0.0
-        valid = True
-        
-        for tad_id in component:
-            node = node_map[tad_id]
-            
-            # TAD
-            left_coord = coord_map.get(node.left_boundary_id, node.original_left)
-            right_coord = coord_map.get(node.right_boundary_id, node.original_right)
-            
-            # :left < right
-            if left_coord >= right_coord:
-                valid = False
-                break
-            
-            # TAD
-            score = compute_tad_score(left_coord, right_coord, signals, oe, obs_large, obs, 
-                                      node, boundary_map)
-            
-            # (NEG_INF)
-            if score == NEG_INF:
-                valid = False
-                break
-            
-            total_score += score
-        
-        if valid and total_score > best_score:
-            best_score = total_score
-            best_combination = coord_map.copy()
-    
-    _apply_combination(component, boundary_ids, best_combination, node_map, boundary_map, logger)
+    """Exact max-sum DP over the boundary interaction graph.
 
+    A TAD contributes a pairwise factor once both of its boundary variables
+    have been assigned. The state retains only assigned boundaries needed by
+    a not-yet-scored TAD. For equal scores, keep the first Cartesian-product
+    assignment, matching the original exhaustive solver's tie rule.
+    """
+    index = {bid: i for i, bid in enumerate(boundary_ids)}
+    factors_by_end = [[] for _ in boundary_ids]
+    factor_end = []
+    for tad_id in component:
+        node = node_map[tad_id]
+        end = max(index.get(node.left_boundary_id, -1),
+                  index.get(node.right_boundary_id, -1))
+        factors_by_end[end].append(node)
+        factor_end.append((node, end))
 
-def _optimize_component_iterative(component: List[int], boundary_ids: List[int],
-                                  node_map: Dict[int, TADNode], boundary_map: BoundaryMap,
-                                  signals: LinearSignals, oe: np.ndarray,
-                                  obs_large: np.ndarray, obs: np.ndarray,
-                                  logger: logging.Logger, max_iterations: int = 30) -> None:
-    """
-    
-    
-    ,:
-    1. 
-    2. ,()
-    3. ()
-    
-    ,,
-    
-    :
-        component: List[int] - TAD ID
-        boundary_ids: List[int] - ID
-        node_map: Dict[int, TADNode] - TAD
-        boundary_map: BoundaryMap - 
-        signals: LinearSignals - 
-        oe: np.ndarray - O/E
-        obs_large: np.ndarray - Hi-C
-        obs: np.ndarray - Hi-C
-        logger: logging.Logger - 
-        max_iterations: int - (30)
-    """
-    current_combo = {bid: boundary_map.boundaries[bid].canonical_coord for bid in boundary_ids}
-    
-    for iteration in range(max_iterations):
-        improved = False  # 
-        
-        for bid in boundary_ids:
-            boundary = boundary_map.boundaries[bid]
-            old_coord = current_combo[bid]
-            best_coord = old_coord
-            best_score = NEG_INF
-            
-            for candidate in boundary.candidates:
-                current_combo[bid] = candidate
-                
-                # TAD
-                total_score = 0.0
-                valid = True
-                
-                for tad_id in component:
-                    node = node_map[tad_id]
-                    left_coord = current_combo.get(node.left_boundary_id, node.original_left)
-                    right_coord = current_combo.get(node.right_boundary_id, node.original_right)
-                    
-                    if left_coord >= right_coord:
-                        valid = False
+    active_after = []
+    for i in range(len(boundary_ids)):
+        active_after.append(tuple(
+            bid for bid in boundary_ids[:i + 1]
+            if any(end > i and bid in (node.left_boundary_id, node.right_boundary_id)
+                   for node, end in factor_end)
+        ))
+
+    # state -> (best accumulated score, full coordinate path for backtracking)
+    states = {(): (0.0, ())}
+    previous_active = ()
+    for i, bid in enumerate(boundary_ids):
+        next_active = active_after[i]
+        next_states = {}
+        for key, (partial_score, path) in states.items():
+            prior_coords = dict(zip(previous_active, key))
+            for coord in boundary_map.boundaries[bid].candidates:
+                coords = prior_coords.copy()
+                coords[bid] = coord
+                score = partial_score
+                for node in factors_by_end[i]:
+                    left = coords.get(node.left_boundary_id, node.original_left)
+                    right = coords.get(node.right_boundary_id, node.original_right)
+                    if left >= right:
                         break
-                    
-                    score = compute_tad_score(left_coord, right_coord, signals, oe, obs_large, obs,
-                                              node, boundary_map)
-                    if score == NEG_INF:
-                        valid = False
+                    contribution = compute_tad_score(
+                        left, right, signals, oe, obs_large, obs, node, boundary_map)
+                    if contribution == NEG_INF:
                         break
-                    
-                    total_score += score
-                
-                if valid and total_score > best_score:
-                    best_score = total_score
-                    best_coord = candidate
-            
-            if best_coord != old_coord:
-                improved = True
-            current_combo[bid] = best_coord
-        
-        if not improved:
+                    score += contribution
+                else:
+                    new_key = tuple(coords[active_bid] for active_bid in next_active)
+                    new_path = path + (coord,)
+                    previous = next_states.get(new_key)
+                    if (previous is None or score > previous[0] or
+                            (score == previous[0] and new_path < previous[1])):
+                        next_states[new_key] = (score, new_path)
+        states = next_states
+        previous_active = next_active
+        if not states:
             break
-    
-    logger.debug(f"    Converged in {iteration + 1} iterations")
-    
-    _apply_combination(component, boundary_ids, current_combo, node_map, boundary_map, logger)
+
+    if states and states[()][0] > NEG_INF:
+        _, best_path = states[()]
+        best_combination = dict(zip(boundary_ids, best_path))
+    else:
+        best_combination = {
+            bid: boundary_map.boundaries[bid].canonical_coord for bid in boundary_ids
+        }
+    _apply_combination(component, boundary_ids, best_combination, node_map, boundary_map, logger)
 
 
 def _apply_combination(component: List[int], boundary_ids: List[int], 
@@ -1443,7 +1427,7 @@ def refine_tads(data_dir: str, output_path: str = None, debug: bool = False):
     """
     logger = setup_logger(debug)
     logger.info("="*60)
-    logger.info("TAD DP Refine (V7: DP-based Joint Optimization)")
+    logger.info("Component-wise exact TAD boundary refinement")
     logger.info("="*60)
     
     clear_tad_score_cache()
@@ -1559,9 +1543,7 @@ def main():
     - --output: ()
     - --debug: (,)
     """
-    parser = argparse.ArgumentParser(
-        description='TAD (V7: DP-based Joint Optimization)'
-    )
+    parser = argparse.ArgumentParser(description='Component-wise exact TAD boundary refinement')
     
     # :--data_dir--root_dir
     g = parser.add_mutually_exclusive_group(required=True)
@@ -1577,27 +1559,20 @@ def main():
         if _is_valid_data_dir(args.data_dir):
             refine_tads(args.data_dir, args.output, args.debug)
         else:
-            print(f": {args.data_dir}")
+            parser.error(f"Invalid data directory: {args.data_dir}")
     else:
         dirs = _collect_data_dirs(args.root_dir)
         if not dirs:
-            print(f": {args.root_dir} ")
-            return
+            parser.error(f"No valid data directories under {args.root_dir}")
         
         if args.debug: 
             dirs = dirs[:1]
         
         print(f" {len(dirs)} ")
         
-        total_tads = 0
-        total_opt = 0
-        
         for i, d in enumerate(dirs, 1):
             print(f"[{i}/{len(dirs)}] : {d}")
-            try: 
-                refine_tads(d, None, args.debug)
-            except Exception as e: 
-                print(f": {e}")
+            refine_tads(d, None, args.debug)
         
         print(f"\n!")
 

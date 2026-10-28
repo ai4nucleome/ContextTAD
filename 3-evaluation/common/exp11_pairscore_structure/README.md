@@ -18,6 +18,5 @@ bash 3-evaluation/common/exp11_pairscore_structure/run_exp11.sh \
   --cache-dir /path/to/figure6_cache
 ```
 
-The released compact tables are provided under `released_results/`. They are
-included for inspection and do not replace the required Hi-C and track inputs.
+The script generates result tables under the requested output directory; the required Hi-C and track inputs are listed above.
 

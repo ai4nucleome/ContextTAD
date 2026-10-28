@@ -27,6 +27,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 from robustadScore import Delta
+from tad_dp_refine import refine_tads
 
 PROJECT_ROOT = SCRIPT_DIR.parents[2]
 
@@ -358,6 +359,23 @@ def get_window_positions(N, obs_size=OBS_SIZE, step=STEP_SIZE):
     return positions
 
 
+def load_refined_tads(dp_window_dir: Path):
+    if not dp_window_dir.is_dir():
+        raise FileNotFoundError(f"Missing DP input window: {dp_window_dir}")
+    tad_dp_path = dp_window_dir / "TAD_dp.txt"
+    fresh_dp_path = dp_window_dir / "TAD_dp.new.txt"
+    refine_tads(str(dp_window_dir), str(fresh_dp_path))
+    os.replace(fresh_dp_path, tad_dp_path)
+
+    tads_half_open = []
+    with tad_dp_path.open() as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 2:
+                tads_half_open.append((int(parts[0]), int(parts[1])))
+    return tads_half_open
+
+
 def process_4000M(chroms=CHROMS):
     """
      4000M :  + oeLarge + 
@@ -410,17 +428,8 @@ def process_4000M(chroms=CHROMS):
             #  oeLarge.npy
             np.save(OE_LARGE_DIR / chrom / f"{window_name}.npy", oe_large)
 
-            #  TAD_dp.txt ()
-            tad_dp_path = EXISTING_4000M_DIR / chrom / window_name / "TAD_dp.txt"
-            tads_half_open = []
-            if tad_dp_path.exists():
-                with open(tad_dp_path, 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                tads_half_open.append((int(parts[0]), int(parts[1])))
+            # Recompute from the current DP implementation; never consume a stale TAD_dp.txt.
+            tads_half_open = load_refined_tads(EXISTING_4000M_DIR / chrom / window_name)
 
             tads_closed = [(l, r - 1) for l, r in tads_half_open if r - 1 > l]
 

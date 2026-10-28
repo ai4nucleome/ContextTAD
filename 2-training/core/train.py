@@ -158,7 +158,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--count_weight", type=float, default=32.0)
     p.add_argument("--boundary_weight", type=float, default=0.0)
     p.add_argument("--pair_hard_window", type=int, default=8)
-    p.add_argument("--max_grad_norm", type=float, default=0.4)
+    p.add_argument("--max_grad_norm", type=float, default=1.0)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--max_train_steps", type=int, default=0)
     p.add_argument("--max_val_steps", type=int, default=0)

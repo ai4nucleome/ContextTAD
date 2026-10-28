@@ -109,7 +109,7 @@ if [[ "${RUN_STEP2}" == true ]]; then
   echo "root_dir: ${ROOT_DIR}"
   echo "------------------------------------------------------------"
 
-  CMD="${PYTHON} ${SCRIPT_DIR}/tad_dp_refine.py --root_dir '${ROOT_DIR}'"
+  CMD="${PYTHON} ${PROJECT_ROOT}/1-prepare_data/step2_prepare_labels/scripts/tad_dp_refine.py --root_dir '${ROOT_DIR}'"
   if [[ -n "${DEBUG_FLAG}" ]]; then
     CMD+=" ${DEBUG_FLAG}"
   fi
