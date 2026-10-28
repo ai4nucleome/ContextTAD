@@ -38,6 +38,35 @@ class NegativePairTests(unittest.TestCase):
             observed = self.objective.pair_loss(self.left, self.right, [torch.tensor(pairs)])
         torch.testing.assert_close(observed, self.positive_loss(pairs))
 
+    def test_cyclic_mismatch_rejects_reversed_pair(self):
+        self.left = torch.full((1, 20), 0.5, requires_grad=True)
+        self.right = torch.tensor([[0.2 + 0.03 * i for i in range(20)]], requires_grad=True)
+        pairs = [(1, 6), (10, 15)]
+        with patch.object(torch, "randint", return_value=torch.tensor([-8, -8])):
+            observed = self.objective.pair_loss(self.left, self.right, [torch.tensor(pairs)])
+        valid_negative = self.left[0, 1] * self.right[0, 15]
+        expected = self.positive_loss(pairs) - 0.5 * torch.log1p(-valid_negative)
+        torch.testing.assert_close(observed, expected)
+
+    def test_cyclic_mismatch_requires_five_bin_separation(self):
+        pairs = [(1, 9), (5, 10)]
+        with patch.object(torch, "randint", return_value=torch.tensor([-8, -8])):
+            observed = self.objective.pair_loss(self.left, self.right, [torch.tensor(pairs)])
+        valid_negative = self.left[0, 1] * self.right[0, 10]
+        expected = self.positive_loss(pairs) - 0.5 * torch.log1p(-valid_negative)
+        torch.testing.assert_close(observed, expected)
+
+    def test_cyclic_mismatch_keeps_exactly_five_bin_separation(self):
+        pairs = [(1, 10), (5, 11)]
+        with patch.object(torch, "randint", return_value=torch.tensor([-8, -8])):
+            observed = self.objective.pair_loss(self.left, self.right, [torch.tensor(pairs)])
+        valid_negatives = torch.stack((
+            self.left[0, 1] * self.right[0, 11],
+            self.left[0, 5] * self.right[0, 10],
+        ))
+        expected = self.positive_loss(pairs) - 0.5 * torch.log1p(-valid_negatives).mean()
+        torch.testing.assert_close(observed, expected)
+
     def test_window_edge_clamp_does_not_relabel_positive(self):
         pairs = [(2, 11)]
         with patch.object(torch, "randint", return_value=torch.tensor([8])):

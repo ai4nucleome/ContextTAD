@@ -64,8 +64,10 @@ class PairCountLoss(nn.Module):
             negative_parts = []
             if len(left_idx) > 1:
                 shifted_right = torch.roll(right_idx, shifts=1)
-                valid_mismatch = ~torch.isin(
-                    left_idx * n_bins + shifted_right, positive_pair_ids
+                valid_mismatch = (
+                    (shifted_right > left_idx)
+                    & (shifted_right - left_idx >= self.min_len)
+                    & ~torch.isin(left_idx * n_bins + shifted_right, positive_pair_ids)
                 )
                 if valid_mismatch.any():
                     negative_parts.append(
