@@ -259,13 +259,13 @@ other-cell data, histone tracks, or `.mcool` files.
 | Experiment | Analysis | Main manuscript use |
 |---|---|---|
 | `exp1_tadnum_ctcf_chiapet` | 250M CTCF ChIA-PET-supported L0/L1+ TAD counts | Figure 2b |
-| `exp2_struct_protein` | CTCF, RAD21, and SMC3 boundary enrichment | Figure 2c |
-| `exp3_tadb_left_ctcf_chipseq` | Left-boundary CTCF ChIP-seq support | Figure 2d |
-| `exp4_tadb_right_ctcf_chipseq` | Right-boundary CTCF ChIP-seq support | Figure 2e |
-| `exp5_coolpup` | Aggregate TAD pileups | Figure 5 |
-| `exp6_tadnum_ctcf_chiapet_downsample` | Seven-coverage TAD counts and CTCF support | Figure 3 |
-| `exp7_othercell_tadnum_ctcf_chiapet` | K562/IMR90 CTCF ChIA-PET support | Figure 4 |
-| `exp8_othercell_both_ctcf_chipseq` | K562/IMR90 directional boundary support | Figure 4 |
+| `exp2_struct_protein` | CTCF, RAD21, and SMC3 boundary enrichment | Figure 2e |
+| `exp3_tadb_left_ctcf_chipseq` | Left-boundary CTCF ChIP-seq support | Figure 2c |
+| `exp4_tadb_right_ctcf_chipseq` | Right-boundary CTCF ChIP-seq support | Figure 2d |
+| `exp5_coolpup` | Aggregate TAD pileups | Figure 3 |
+| `exp6_tadnum_ctcf_chiapet_downsample` | Seven-coverage TAD counts and CTCF support | Figure 4 |
+| `exp7_othercell_tadnum_ctcf_chiapet` | K562/IMR90 CTCF ChIA-PET support | Figure 5 |
+| `exp8_othercell_both_ctcf_chipseq` | K562/IMR90 directional boundary support | Figure 5 |
 | `exp9_tad_size` | 250M TAD-size distribution and median ranking | Figure 2a |
 | `exp10_histone_modification` | H3K27me3/H3K36me3 contrast permutation test | Figure 2f |
 | `exp11_pairscore_structure` | Pair-score quartile pileups, boundary insulation, and representative regions | Figure 6 |
